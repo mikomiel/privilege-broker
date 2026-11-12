@@ -2,8 +2,8 @@
 
 ## Status and reporting
 
-This repository contains a pre-release authorization library, not the complete
-approval service or executor. No product release or production deployment is
+This repository contains a pre-release PVE authorization and approval service,
+not the complete agent-to-execution product. No product release or production deployment is
 yet supported. Do not use it as an authorization boundary until the PVE
 extraction and its acceptance checks are complete.
 
@@ -33,7 +33,8 @@ No response-time or bounty commitment is made.
 - CI has read-only repository access and no deployment credentials. A public
   build must not require private infrastructure.
 
-These are acceptance requirements for the complete service. The extracted
-library implements PVE policy, canonicalization, signing and certificate
-argument construction; it does not authenticate a remote client, perform
-a passkey ceremony or execute an operation by itself.
+The extracted service verifies passkey ceremonies and binds authorization to
+frontend-authenticated identity. The TLS frontend, private keys and isolation
+remain deployer responsibilities. The service can sign a restricted SSH
+certificate, but it has no PVE transport, execution worker or typed dispatcher.
+Approval and certificate issuance are not evidence that an operation ran.

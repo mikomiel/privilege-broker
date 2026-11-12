@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width">
+<title>Enroll broker passkey</title>
+</head>
+<body>
+<main>
+<h1>Enroll broker passkey</h1>
+<p id="state">Ready to enroll a passkey.</p>
+<button id="enroll">Enroll passkey</button>
+</main>
+<script>
+const id = {enrollment_id};
+const bytes = value => Uint8Array.from(atob(value.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+const b64 = value => btoa(String.fromCharCode(...new Uint8Array(value))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+document.getElementById('enroll').onclick = async () => {{
+  const state = document.getElementById('state'); state.textContent = 'Waiting for passkey confirmation...';
+  try {{
+    const options = await fetch(`/v1/broker/enrollments/${{id}}/options`).then(r => r.json());
+    options.challenge = bytes(options.challenge); options.user.id = bytes(options.user.id); options.excludeCredentials.forEach(c => c.id = bytes(c.id));
+    const credential = await navigator.credentials.create({{publicKey: options}});
+    const payload = {{id: credential.id, rawId: b64(credential.rawId), type: credential.type, response: {{
+      attestationObject: b64(credential.response.attestationObject), clientDataJSON: b64(credential.response.clientDataJSON)
+    }}}};
+    const result = await fetch(`/v1/broker/enrollments/${{id}}/complete`, {{method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify({{credential: payload}})}});
+    if (!result.ok) throw new Error('enrollment rejected'); state.textContent = 'Passkey enrolled.';
+  }} catch (error) {{ state.textContent = 'Passkey enrollment was not completed.'; }}
+}};
+</script>
+</body>
+</html>

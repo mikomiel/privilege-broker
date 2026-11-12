@@ -10,14 +10,27 @@ requires-python = ">=3.11"
 license = "AGPL-3.0-only"
 license-files = ["LICENSE"]
 readme = "README.md"
-dependencies = ["cryptography==50.0.2"]
+dependencies = [
+    "cryptography==50.0.2",
+    "fastapi==0.162.5",
+    "pydantic==2.14.3",
+    "slowapi==0.1.10",
+    "uvicorn==0.54.0",
+    "webauthn==3.0.1",
+]
 
 [project.urls]
 Homepage = "https://github.com/mikomiel/privilege-broker"
 Issues = "https://github.com/mikomiel/privilege-broker/issues"
 
 [dependency-groups]
-dev = ["pytest==9.2.0", "ruff==0.17.4", "PyYAML==6.0.3"]
+dev = [
+    "pytest==9.2.0",
+    "ruff==0.17.4",
+    "PyYAML==6.0.3",
+    "httpx==0.28.1",
+    "cbor2==6.2.1",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["privilege_broker"]

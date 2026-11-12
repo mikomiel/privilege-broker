@@ -24,6 +24,10 @@ git diff --check
 Ruff configuration has one owner, `ruff.toml`. The locked toolchain follows
 the other public Python projects: uv, Ruff, pytest and a wheel build.
 Tests use temporary state, synthetic identities and no private services.
+Install the OpenSSH client tools (`ssh-keygen`) for the real local certificate
+tests. WebAuthn tests use generated software-authenticator keys and the real
+verification library; they do not prove physical user presence or browser
+compatibility. No test contacts PVE or a notification provider.
 Assert refusals as well as success; prove a regression test rejects the
 contrary behaviour. Mock destructive external effects, not the boundary the
 test claims to prove.

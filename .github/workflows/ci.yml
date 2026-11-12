@@ -80,7 +80,7 @@ jobs:
           uv venv --python 3.12 "$RUNNER_TEMP/privilege-broker-wheel"
           uv pip install --python "$RUNNER_TEMP/privilege-broker-wheel/bin/python" dist/*.whl
           cd "$RUNNER_TEMP"
-          "$RUNNER_TEMP/privilege-broker-wheel/bin/python" -I -c 'from privilege_broker.pve.authorization import CertificatePolicy; assert "source-address=198.51.100.88/32" in CertificatePolicy(source="198.51.100.88/32").to_options()'
+          "$RUNNER_TEMP/privilege-broker-wheel/bin/python" -I -c 'from privilege_broker.pve.authorization import CertificatePolicy; assert "source-address=198.51.100.88/32" in CertificatePolicy(source="198.51.100.88/32").to_options(); from privilege_broker.pve.service import create_broker_app_from_env; assert callable(create_broker_app_from_env)'
 
   public-content:
     name: public-content

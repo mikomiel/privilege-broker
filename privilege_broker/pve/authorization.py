@@ -554,7 +554,8 @@ class CertificateCommandBuilder:
     def __init__(self, policy: CertificatePolicy) -> None:
         self._policy = policy
 
-    def validate_public_key(self, public_key_pem: str) -> Ed25519PublicKey:
+    @staticmethod
+    def validate_public_key(public_key_pem: str) -> Ed25519PublicKey:
         """Validate an SSH public key string, returning the parsed key.
 
         Raises ``ValueError`` if the key is invalid, not Ed25519, or malformed.
