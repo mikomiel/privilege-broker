@@ -1,60 +1,61 @@
 # privilege-broker
 
-Human-approved, narrowly scoped operations for AI agents. Proxmox VE (PVE)
-container operations are the first integration.
+[![CI](https://github.com/mikomiel/privilege-broker/actions/workflows/ci.yml/badge.svg)](https://github.com/mikomiel/privilege-broker/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/mikomiel/privilege-broker)](LICENSE)
 
-**Status: source bootstrap. There is no runnable broker or supported release
-yet.** The extraction is planned in
-[OpenSpec](openspec/changes/extract-pve-foundation/proposal.md). Existing
-deployments are not changed by this repository.
+Human-approved typed operations for AI agents, with Proxmox VE as the first integration.
 
-## Intended operation flow
+For operators who want agents to request bounded actions without receiving a
+general shell or infrastructure-wide credentials.
 
-1. An authenticated agent requests a named operation on an allowed target.
-2. The broker notifies the operator and shows the exact request in its web UI.
-3. The operator approves with a passkey, or denies the request.
-4. A trusted executor receives short-lived, operation-bound authorization.
-5. The agent can read the execution outcome. Approval alone is not success.
+**Status: pre-release authorization foundation.** There is no runnable broker,
+passkey UI, notification sender or executor in this package yet. No existing
+deployment has switched to it, and no product release has been published.
 
-The PVE foundation uses signed capability leases, one-shot SSH certificates
-and a replay-protected typed dispatcher. It does not grant an arbitrary
-shell, a general-purpose PVE token, or authority to modify broker policy.
-The initial notification transport is Discord; notification delivery is not
-authorization.
+The extracted foundation can:
 
-## Development
+- Load a versioned PVE target policy and reject unknown actions or malformed grants.
+- Bind canonical requests to authenticated identity and execution arguments.
+- Sign and verify short-lived, single-dispatch capability leases.
+- Construct source-restricted SSH certificate arguments without executing commands.
 
-GitHub is the only source and pull-request surface. Use a task branch and
-a pull request to `main`. Read [AGENTS.md](AGENTS.md),
-[CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
+## Try the local example
 
-The bootstrap checks need Python 3.11+ and uv:
+With Python 3.11+ and uv, from a clone of this repository:
 
 ```sh
 uv sync --frozen
-uv run ruff check .
-uv run python -m pytest -q
-uv run python scripts/check_estate_identifiers.py
+uv run python examples/pve_authorization.py
 ```
 
-These checks cover repository scaffolding and publication guards, not a live
-broker. Tests and examples must work without private infrastructure.
+Expected output:
 
-## Product and deployment ownership
+```text
+PVE authorization example verified; no operation executed
+```
 
-This repository will own the broker, agent-facing interfaces, notifications,
-PVE execution implementation, tests and product documentation. Deployers own
-credentials, passkey enrollment, trust roots, allowed targets, network policy,
-service placement and backups. The source consumer uses a reviewed, pinned
-version; a merge never upgrades a deployment automatically.
+The example uses ephemeral keys in memory and synthetic data. It performs no
+network access, passkey approval, certificate signing or PVE operation.
+It is a library demonstration, not an authorization service.
 
-The existing implementation stays in service until the extracted PVE flow
-passes parity checks and a separately authorized cutover. After that cutover,
-consumers must not maintain a second authored implementation.
+## Documentation
 
-## Licence
+Read [architecture and extraction status](docs/architecture.md),
+[configuration](docs/configuration.md), [repository tooling](docs/repository-standards.md)
+and [the release process](docs/releases.md).
+The active [OpenSpec change](openspec/changes/extract-pve-foundation/proposal.md)
+owns the remaining notification, approval service and execution stages.
+
+## Contributing
+
+Use GitHub Issues and focused PRs. Read [CONTRIBUTING.md](CONTRIBUTING.md),
+[AGENTS.md](AGENTS.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+Report vulnerabilities through the private route in [SECURITY.md](SECURITY.md).
+
+## License
 
 [GNU Affero General Public License v3.0 only](LICENSE)
-(`SPDX-License-Identifier: AGPL-3.0-only`). A network deployment must offer
-its users the corresponding source of the version it runs, including local
-modifications where the licence requires them.
+(`SPDX-License-Identifier: AGPL-3.0-only`). Copyright belongs to the project
+copyright holders; contributions are accepted under the same licence.
+Network deployments must offer the corresponding source of the version they
+run, including modifications where the licence requires them.
