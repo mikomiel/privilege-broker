@@ -1753,6 +1753,228 @@ def test_certificate_rechecks_expiry_after_validation_before_issuance(
     assert certificate_signer.calls == 0
     assert store.get_broker_request(request_id)["certificate_fetched"] == 0
     assert "certificate_issued" not in [event["event"] for event in store.audit_events(request_id)]
+    if deadline_kind == "lease":
+        with pytest.raises(ValueError, match="lease has expired"):
+            store.fetch_lease(request_id, extractor.extract())
+
+
+def _across_a_real_lock_wait(store, monkeypatch, deadline, operation):
+    """Keep real RLock semantics; signal before the worker's native acquire."""
+    clock = [deadline - 1]
+    monkeypatch.setattr(svc.time, "time", lambda: clock[0])
+    native = store._lock
+    waiting = threading.Event()
+    main = threading.current_thread()
+
+    class ObservedLock:
+        def __enter__(self):
+            if threading.current_thread() is not main:
+                waiting.set()
+            return native.__enter__()
+
+        def __exit__(self, *exc):
+            return native.__exit__(*exc)
+
+    monkeypatch.setattr(store, "_lock", ObservedLock())
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with native:
+            future = pool.submit(operation)
+            assert waiting.wait(5), "worker did not contend for the real state lock"
+            clock[0] = deadline + 1
+        return future.result(timeout=5)
+
+
+@pytest.mark.parametrize("operation", ["approval", "lease", "certificate", "denial", "cancel"])
+def test_authority_decisions_sample_time_after_waiting_for_the_lock(store, signer, extractor, monkeypatch, operation):
+    created = 1_000_000
+    _, request_id, deadline = store.create_broker_request(
+        "ct.reboot",
+        9001,
+        "lock expiry",
+        "operator",
+        "agent-demo",
+        extractor.extract(),
+        _VALID_PUB_KEY,
+        policy=_POLICY,
+        now=created,
+    )
+    store.begin_authentication(request_id, now=deadline - 10)
+    if operation in {"lease", "certificate"}:
+        store.approve(
+            request_id,
+            {"id": "credential-1", "proof": "verified"},
+            FakeVerifier(),
+            broker.LeaseFactory(signer, _POLICY),
+            now=deadline - 10,
+        )
+    counter = store.list_passkeys()[0].sign_count
+
+    class NoSigningAfterExpiry:
+        calls = 0
+
+        def sign(self, key, serial):
+            self.calls += 1
+            return "synthetic certificate"
+
+    certificate_signer = NoSigningAfterExpiry()
+    operations = {
+        "approval": lambda: store.approve(
+            request_id,
+            {"id": "credential-1", "proof": "verified"},
+            FakeVerifier(),
+            broker.LeaseFactory(signer, _POLICY),
+        ),
+        "lease": lambda: store.fetch_lease(request_id, extractor.extract()),
+        "certificate": lambda: store.fetch_certificate_gate(
+            request_id,
+            extractor.extract(),
+            _VALID_PUB_KEY,
+            certificate_signer,
+        ),
+        "denial": lambda: store.deny_no_auth(request_id),
+        "cancel": lambda: store.cancel(request_id, extractor.extract()),
+    }
+    with pytest.raises(ValueError):
+        _across_a_real_lock_wait(store, monkeypatch, deadline, operations[operation])
+    row = store.get_broker_request(request_id)
+    assert row["status"] == "expired"
+    assert row["certificate_fetched"] == 0
+    assert certificate_signer.calls == 0
+    assert store.list_passkeys()[0].sign_count == counter
+    events = [event["event"] for event in store.audit_events(request_id)]
+    if operation == "approval":
+        assert row["lease_json"] is None
+        assert "request_approved" not in events
+    assert "lease_fetched" not in events
+    assert "certificate_issued" not in events
+    assert "request_denied" not in events
+    assert "request_cancelled" not in events
+
+
+@pytest.mark.parametrize("operation", ["registration", "enrollment-options"])
+def test_enrollment_expiry_is_checked_after_waiting_for_the_lock(empty_store, monkeypatch, operation):
+    created = 1_000_000
+    enrollment_id, _, _ = empty_store.begin_enrollment("operator", now=created)
+
+    def callback():
+        if operation == "registration":
+            return empty_store.complete_enrollment(
+                enrollment_id,
+                {"proof": "registered"},
+                FakeRegistrationVerifier(),
+                _ENROLLMENT_KEY,
+            )
+        return empty_store.get_pending_enrollment(enrollment_id)
+
+    with pytest.raises(ValueError, match="not pending"):
+        _across_a_real_lock_wait(empty_store, monkeypatch, created + svc.CHALLENGE_TTL_SECONDS, callback)
+    assert not empty_store.has_passkey()
+    events = [event["event"] for event in empty_store.audit_events(enrollment_id)]
+    assert "passkey_enrolled" not in events
+    assert "enrollment_bootstrap_completed" not in events
+
+
+@pytest.mark.parametrize("operation", ["status", "approval-options"])
+def test_request_reads_do_not_use_a_timestamp_from_before_lock_contention(store, extractor, monkeypatch, operation):
+    _, request_id, deadline = store.create_broker_request(
+        "ct.reboot",
+        9001,
+        "read expiry",
+        "operator",
+        "agent-demo",
+        extractor.extract(),
+        _VALID_PUB_KEY,
+        policy=_POLICY,
+        now=1_000_000,
+    )
+    if operation == "status":
+        row = _across_a_real_lock_wait(store, monkeypatch, deadline, lambda: store.get_broker_request(request_id))
+        assert row["status"] == "expired"
+    else:
+        with pytest.raises(ValueError, match="not awaiting approval"):
+            _across_a_real_lock_wait(store, monkeypatch, deadline, lambda: store.begin_authentication(request_id))
+    assert "approval_challenge_created" not in [event["event"] for event in store.audit_events(request_id)]
+
+
+@pytest.mark.parametrize("stage", ["approval", "registration", "certificate"])
+def test_expiry_during_verification_or_signing_cannot_commit_authority(
+    store, empty_store, signer, extractor, monkeypatch, stage
+):
+    created = 1_000_000
+    if stage == "registration":
+        enrollment_id, _, _ = empty_store.begin_enrollment("operator", now=created)
+        deadline = created + svc.CHALLENGE_TTL_SECONDS
+    else:
+        _, request_id, deadline = store.create_broker_request(
+            "ct.reboot",
+            9001,
+            "blocking stage",
+            "operator",
+            "agent-demo",
+            extractor.extract(),
+            _VALID_PUB_KEY,
+            policy=_POLICY,
+            now=created,
+        )
+        store.begin_authentication(request_id, now=deadline - 10)
+        if stage == "certificate":
+            store.approve(
+                request_id,
+                {"id": "credential-1", "proof": "verified"},
+                FakeVerifier(),
+                broker.LeaseFactory(signer, _POLICY),
+                now=deadline - 10,
+            )
+    clock = [deadline - 1]
+    monkeypatch.setattr(svc.time, "time", lambda: clock[0])
+
+    class SlowAssertion(FakeVerifier):
+        def verify(self, *args):
+            result = super().verify(*args)
+            clock[0] = deadline + 1
+            return result
+
+    class SlowRegistration(FakeRegistrationVerifier):
+        def verify(self, *args):
+            result = super().verify(*args)
+            clock[0] = deadline + 1
+            return result
+
+    class SlowSigner:
+        def sign(self, key, serial):
+            clock[0] = deadline + 1
+            return "certificate must not be returned after expiry"
+
+    with pytest.raises(ValueError):
+        if stage == "registration":
+            empty_store.complete_enrollment(
+                enrollment_id,
+                {"proof": "registered"},
+                SlowRegistration(),
+                _ENROLLMENT_KEY,
+            )
+        elif stage == "approval":
+            store.approve(
+                request_id,
+                {"id": "credential-1", "proof": "verified"},
+                SlowAssertion(),
+                broker.LeaseFactory(signer, _POLICY),
+            )
+        else:
+            store.fetch_certificate_gate(request_id, extractor.extract(), _VALID_PUB_KEY, SlowSigner())
+    if stage == "registration":
+        assert not empty_store.has_passkey()
+        assert empty_store.connection.execute("SELECT COUNT(*) FROM broker_bootstrap_state").fetchone()[0] == 0
+    else:
+        row = store.get_broker_request(request_id)
+        assert row["status"] == "expired"
+        assert row["certificate_fetched"] == 0
+        events = [event["event"] for event in store.audit_events(request_id)]
+        assert "certificate_issued" not in events
+        if stage == "approval":
+            assert row["lease_json"] is None
+            assert store.list_passkeys()[0].sign_count == 0
+            assert "request_approved" not in events
 
 
 class TestPublicKeyEndpoint:

@@ -444,15 +444,15 @@ class BrokerStore:
 
     def get_pending_enrollment(self, enrollment_id: str, now: int | None = None) -> dict[str, Any]:
         """Return a pending, unexpired enrollment or raise ``ValueError``."""
-        now = now or int(time.time())
         with self._lock:
+            now = now if now is not None else int(time.time())
             row = self._connection.execute(
                 "SELECT * FROM broker_enrollments WHERE enrollment_id = ?",
                 (enrollment_id,),
             ).fetchone()
-        if row is None or row["status"] != "pending" or row["expires_at"] < now:
-            raise ValueError("enrollment is not pending")
-        return dict(row)
+            if row is None or row["status"] != "pending" or row["expires_at"] < now:
+                raise ValueError("enrollment is not pending")
+            return dict(row)
 
     def add_passkey(self, passkey: BrokerPasskey) -> None:
         """Insert or replace a passkey."""
@@ -498,15 +498,18 @@ class BrokerStore:
         now: int | None = None,
     ) -> BrokerPasskey:
         """Complete a passkey enrollment after WebAuthn registration."""
-        now = now or int(time.time())
         with self._lock:
+            checked_at = now if now is not None else int(time.time())
             enrollment = self._connection.execute(
                 "SELECT * FROM broker_enrollments WHERE enrollment_id = ?",
                 (enrollment_id,),
             ).fetchone()
-            if enrollment is None or enrollment["status"] != "pending" or enrollment["expires_at"] < now:
+            if enrollment is None or enrollment["status"] != "pending" or enrollment["expires_at"] < checked_at:
                 raise ValueError("enrollment is not pending")
             verified = verifier.verify(credential, enrollment["challenge"])
+            now = now if now is not None else int(time.time())
+            if enrollment["expires_at"] < now:
+                raise ValueError("enrollment is not pending")
             passkey = BrokerPasskey(
                 verified.credential_id,
                 enrollment["operator"],
@@ -662,8 +665,8 @@ class BrokerStore:
 
         Raises ``ValueError`` if not found.
         """
-        now = now or int(time.time())
         with self._lock:
+            now = now if now is not None else int(time.time())
             row = self._connection.execute(
                 "SELECT * FROM broker_requests WHERE request_id = ?",
                 (request_id,),
@@ -698,9 +701,9 @@ class BrokerStore:
 
         Returns (challenge, list_of_registered_passkeys).
         """
-        now = now or int(time.time())
         challenge = secrets.token_bytes(32)
         with self._lock:
+            now = now if now is not None else int(time.time())
             request = self.get_broker_request(request_id, now)
             if request["status"] != "pending" or request["expires_at"] < now:
                 raise ValueError("request is not awaiting approval")
@@ -732,12 +735,12 @@ class BrokerStore:
         The browser caller receives only a status — the lease is stored and
         must be fetched separately through the mTLS lease endpoint.
         """
-        now = now or int(time.time())
         credential_id = credential.get("id")
         if not isinstance(credential_id, str):
             raise ValueError("credential ID is invalid")
         with self._lock:
-            request = self.get_broker_request(request_id, now)
+            checked_at = now if now is not None else int(time.time())
+            request = self.get_broker_request(request_id, checked_at)
             challenge_row = self._connection.execute(
                 "SELECT * FROM broker_challenges WHERE request_id = ?",
                 (request_id,),
@@ -746,9 +749,9 @@ class BrokerStore:
                 "SELECT * FROM broker_passkeys WHERE credential_id = ?",
                 (credential_id,),
             ).fetchone()
-            if request["status"] != "pending" or request["expires_at"] < now:
+            if request["status"] != "pending" or request["expires_at"] < checked_at:
                 raise ValueError("request is not awaiting approval")
-            if challenge_row is None or challenge_row["expires_at"] < now:
+            if challenge_row is None or challenge_row["expires_at"] < checked_at:
                 raise ValueError("challenge is expired or missing")
             if passkey_row is None:
                 raise ValueError("credential is not registered")
@@ -763,6 +766,12 @@ class BrokerStore:
             operator, new_sign_count = verifier.verify(credential, challenge_row["challenge"], passkey)
             if operator != passkey.operator:
                 raise ValueError("credential operator mismatch")
+            now = now if now is not None else int(time.time())
+            if request["expires_at"] < now:
+                self.get_broker_request(request_id, now)
+                raise ValueError("request is not awaiting approval")
+            if challenge_row["expires_at"] < now:
+                raise ValueError("challenge is expired or missing")
 
             lease = lease_factory.create_lease(
                 request=canonical,
@@ -820,8 +829,8 @@ class BrokerStore:
 
     def deny_no_auth(self, request_id: str, now: int | None = None) -> None:
         """Deny a pending request without requiring WebAuthn verification."""
-        now = now or int(time.time())
         with self._lock:
+            now = now if now is not None else int(time.time())
             request = self.get_broker_request(request_id, now)
             if request["status"] != "pending" or request["expires_at"] < now:
                 raise ValueError("request is not awaiting approval")
@@ -838,8 +847,8 @@ class BrokerStore:
 
     def cancel(self, request_id: str, client: VerifiedClient, now: int | None = None) -> None:
         """Cancel a pending request.  Only the original mTLS requester can cancel."""
-        now = now or int(time.time())
         with self._lock:
+            now = now if now is not None else int(time.time())
             request = self.get_broker_request(request_id, now)
             self._require_original_client(request, client)
             cursor = self._connection.execute(
@@ -860,24 +869,28 @@ class BrokerStore:
 
         Only the original mTLS identity that created the request may fetch.
         """
-        now = now or int(time.time())
-        request = self.get_broker_request(request_id, now)
-        self._require_original_client(request, client)
-        if request["status"] == "expired":
-            raise ValueError("request has expired")
-        if request["status"] != "approved":
-            raise ValueError("request is not approved")
-        if request["expires_at"] < now:
-            raise ValueError("lease has expired")
-        if request["lease_json"] is None:
-            raise ValueError("no lease available")
-        self._audit(
-            request_id,
-            "lease_fetched",
-            f"lease fetched by {client.identity}",
-            now,
-        )
-        return json.loads(request["lease_json"])
+        with self._lock:
+            now = now if now is not None else int(time.time())
+            request = self.get_broker_request(request_id, now)
+            self._require_original_client(request, client)
+            if request["status"] == "expired":
+                raise ValueError("request has expired")
+            if request["status"] != "approved":
+                raise ValueError("request is not approved")
+            if request["expires_at"] < now:
+                raise ValueError("lease has expired")
+            if request["lease_json"] is None:
+                raise ValueError("no lease available")
+            lease_data = json.loads(request["lease_json"])
+            if lease_data["expires_at"] < now:
+                raise ValueError("lease has expired")
+            self._audit(
+                request_id,
+                "lease_fetched",
+                f"lease fetched by {client.identity}",
+                now,
+            )
+            return lease_data
 
     def fetch_certificate_gate(
         self,
@@ -901,16 +914,18 @@ class BrokerStore:
         # authority decision and the production clock sample belong inside it.
         submitted_fingerprint = _public_key_fingerprint(ssh_public_key)
         with self._lock:
-            now = now if now is not None else int(time.time())
-            request = self.get_broker_request(request_id, now)
+            checked_at = now if now is not None else int(time.time())
+            request = self.get_broker_request(request_id, checked_at)
             self._require_original_client(request, client)
-            if request["status"] == "expired" or (request["status"] == "approved" and request["expires_at"] < now):
+            if request["status"] == "expired" or (
+                request["status"] == "approved" and request["expires_at"] < checked_at
+            ):
                 raise ValueError("request has expired")
             if request["status"] != "approved":
                 raise ValueError("request is not approved")
             if request["lease_json"] is None:
                 raise ValueError("no active lease")
-            if json.loads(request["lease_json"])["expires_at"] < now:
+            if json.loads(request["lease_json"])["expires_at"] < checked_at:
                 raise ValueError("lease has expired")
             stored_fingerprint = request["ssh_fingerprint"]
             if submitted_fingerprint != stored_fingerprint:
@@ -921,7 +936,7 @@ class BrokerStore:
                     request_id,
                     "certificate_gate_checked",
                     f"certificate gate checked for {client.identity}, fingerprint {stored_fingerprint}",
-                    now,
+                    checked_at,
                 )
                 return "not_ready"
             if request["certificate_fetched"]:
@@ -931,6 +946,12 @@ class BrokerStore:
             # ssh-keygen's uint64, and unpredictable to the requester.
             serial = secrets.randbits(63)
             certificate = cert_signer.sign(ssh_public_key, str(serial))
+            now = now if now is not None else int(time.time())
+            if request["expires_at"] < now:
+                self.get_broker_request(request_id, now)
+                raise ValueError("request has expired")
+            if json.loads(request["lease_json"])["expires_at"] < now:
+                raise ValueError("lease has expired")
             self._connection.execute(
                 "UPDATE broker_requests SET certificate_fetched = 1, certificate_serial = ? WHERE request_id = ?",
                 (serial, request_id),
