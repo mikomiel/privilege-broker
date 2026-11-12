@@ -33,6 +33,54 @@ jobs:
         run: uv run ruff check .
       - name: Test
         run: uv run python -m pytest -q
+      - name: Run the documented local example
+        run: uv run python examples/pve_authorization.py
+
+  checks-python-3-11:
+    name: checks-python-3.11
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.11'
+      - name: Install pinned uv
+        run: python -m pip install --disable-pip-version-check uv==0.13.7
+      - name: Sync locked development tools
+        run: uv sync --frozen
+      - name: Test minimum supported Python
+        run: uv run python -m pytest -q
+      - name: Run the documented local example
+        run: uv run python examples/pve_authorization.py
+
+  build:
+    name: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Install pinned uv
+        run: python -m pip install --disable-pip-version-check uv==0.13.7
+      - name: Build the distribution
+        run: uv build
+      - name: Verify the installed wheel outside the checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv venv --python 3.12 "$RUNNER_TEMP/privilege-broker-wheel"
+          uv pip install --python "$RUNNER_TEMP/privilege-broker-wheel/bin/python" dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/privilege-broker-wheel/bin/python" -I -c 'from privilege_broker.pve.authorization import CertificatePolicy; assert "source-address=198.51.100.88/32" in CertificatePolicy(source="198.51.100.88/32").to_options()'
 
   public-content:
     name: public-content

@@ -2,14 +2,14 @@
 
 ## Status and reporting
 
-This repository is a source bootstrap. No release or production deployment is
+This repository contains a pre-release authorization library, not the complete
+approval service or executor. No product release or production deployment is
 yet supported. Do not use it as an authorization boundary until the PVE
 extraction and its acceptance checks are complete.
 
-Use GitHub private vulnerability reporting when the repository Security tab
-offers it. Otherwise contact the repository owner privately to arrange a
-reporting channel; do not put exploit details or private deployment data in
-a public issue. Include an affected commit and a synthetic reproduction.
+Private vulnerability reporting is enabled. Use the Security tab
+[reporting form](https://github.com/mikomiel/privilege-broker/security/advisories/new);
+do not put exploit details or private deployment data in a public issue. Include an affected commit and a synthetic reproduction.
 No response-time or bounty commitment is made.
 
 ## Required product boundaries
@@ -33,5 +33,7 @@ No response-time or bounty commitment is made.
 - CI has read-only repository access and no deployment credentials. A public
   build must not require private infrastructure.
 
-These are acceptance requirements, not claims of implemented or deployed
-behaviour in the bootstrap.
+These are acceptance requirements for the complete service. The extracted
+library implements PVE policy, canonicalization, signing and certificate
+argument construction; it does not authenticate a remote client, perform
+a passkey ceremony or execute an operation by itself.

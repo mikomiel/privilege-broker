@@ -3,13 +3,13 @@
 ## 1. Public source bootstrap
 
 - [x] 1.1 Create licence, contributor and security contracts and the staged specifications; verify local links and `openspec validate --strict` before public push.
-- [ ] 1.2 Publish the authorized scaffold-only initial commit after secret, identifier, blob and commit-message scans; verify the remote main SHA matches the scanned commit.
+- [x] 1.2 Publish the authorized scaffold-only initial commit after secret, identifier, blob and commit-message scans; verify the remote main SHA matches the scanned commit (`d81e4190e8330ff05ddbc84979986db953b2809b`).
 - [ ] 1.3 Configure protected main with strict required checks and independent review; verify protection through GitHub API and report missing reviewer App coverage without bypass.
 
 ## 2. Portable PVE authorization foundation
 
-- [ ] 2.1 Extract policy parsing and canonical request/lease logic into the PVE package with synthetic versions of the existing tests; verify policy refusals, digest parity, signature tampering, expiry and scope tests.
-- [ ] 2.2 Require deployment-supplied certificate source restriction and preserve fixed principal/dispatcher options; verify no permissive default and no caller-controlled authority expansion.
+- [x] 2.1 Extract policy parsing and canonical request/lease logic into the PVE package with synthetic versions of the existing tests; verify policy refusals, digest parity, signature tampering, expiry and scope tests.
+- [x] 2.2 Require deployment-supplied certificate source restriction and preserve fixed principal/dispatcher options; verify no permissive default and no caller-controlled authority expansion.
 - [ ] 2.3 Document the extracted boundary and source provenance; run clean-install, lint, tests, public-content scans and exact-head CI; obtain independent review and human merge for this executable source PR.
 
 ## 3. Approval service and notifications
@@ -34,6 +34,6 @@
 
 - A consumer-owned integration change must prepare a pinned generated copy and digest verification, preserve old entrypoints and prove PVE parity before changing its source owner.
 - Live deployment, pending-request drain, representative canary, rollback and removal of the old implementation require separate consumer authorization. They are not product-source completion criteria.
-- A later human-merged governance PR can install trusted review-status and documentation-only controlled automerge. Do not install write-capable automation in the empty-main bootstrap.
-- Prepare release-please from the existing repository pattern using only the `RELEASE_PLEASE_TOKEN` Actions secret reference. Secret provisioning was operator-reported on 2026-11-12; it is not evidence of working automation or release authorization. Keep workflow activation and actual tag/release publication behind their separate maintainer decisions.
+- The first source PR also supplies the shared repository baseline requested by the operator on 2026-11-12: community forms, docs/examples, dependency tooling, trusted review-status and documentation-only controlled automerge. Its writer workflows remain inactive until human merge; the empty-main bootstrap contained read-only CI only.
+- Release-please uses the existing `RELEASE_PLEASE_TOKEN` Actions secret reference with `skip-github-release: true`. Secret metadata was verified on 2026-11-12 without retrieving its value. Release-PR preparation is source-present, not proof of working automation or authorization to create a tag or release.
 - Archive only after product acceptance and the project's review gates hold. Consumer runtime cutover remains separately tracked by its owner.

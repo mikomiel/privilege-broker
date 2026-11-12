@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "grants": {
+    "ct.reboot": [
+      7001
+    ],
+    "ct.start": [
+      7001
+    ]
+  },
+  "snapshot_retention_days": 7
+}

@@ -14,7 +14,8 @@ GitHub is the only authoritative source and PR surface.
   tests, dependencies, packaging, licences, agent instructions and unknown
   paths need a human merge. Only reviewed root README/CHANGELOG, direct
   `docs/*.md` and named OpenSpec documents may be eligible for controlled
-  automerge after trusted automation exists. It is not installed at bootstrap.
+  automerge after trusted automation exists on main. The first governance PR
+  is human-owned; its proposed automation cannot approve itself.
 - Tags, releases, package/image publication, infrastructure writes, production
   probes and deployment require separate operator authorization.
 
@@ -41,6 +42,8 @@ production credentials in tests.
 uv sync --frozen
 uv run ruff check .
 uv run python -m pytest -q
+uv run python examples/pve_authorization.py
+uv build
 uv run python scripts/check_estate_identifiers.py
 ```
 

@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_markdown_relative_links_resolve() -> None:
-    pages = list(ROOT.glob("*.md")) + list((ROOT / "openspec").rglob("*.md"))
+    pages = list(ROOT.glob("*.md")) + list((ROOT / "openspec").rglob("*.md")) + list((ROOT / "docs").rglob("*.md"))
     assert ROOT / "README.md" in pages
     checked = []
     for page in pages:

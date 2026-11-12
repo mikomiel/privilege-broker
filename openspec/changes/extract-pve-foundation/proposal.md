@@ -54,8 +54,9 @@ Planned product code: `privilege_broker/` with the PVE implementation under
 local substitutes. Runtime dependencies follow the existing Python,
 FastAPI, WebAuthn, SQLite, cryptography and OpenSSH implementation.
 
-The first implementation PR contains only the portable PVE policy and
-authorization foundation and its tests. Service, transport and dispatch
+The first implementation PR contains the portable PVE policy and
+authorization foundation and its tests, plus the shared GitHub tooling and
+contribution baseline requested by the operator. Service, transport and dispatch
 follow in later reviewed PRs. No current consumer switches in this change.
 A consumer's integration plan, pin update and runtime acceptance remain with
 that consumer and require separate deployment authorization.

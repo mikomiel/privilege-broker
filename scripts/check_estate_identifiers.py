@@ -32,8 +32,21 @@ from pathlib import Path
 
 SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".mypy_cache"}
 SKIP_SUFFIXES = {
-    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".pdf", ".zip", ".gz",
-    ".whl", ".so", ".woff", ".woff2", ".ttf", ".pyc",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".ico",
+    ".pdf",
+    ".zip",
+    ".gz",
+    ".whl",
+    ".so",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".pyc",
 }
 
 RULES: list[tuple[str, re.Pattern[str]]] = [
@@ -79,19 +92,11 @@ def tracked_files() -> list[Path]:
             text=True,
         ).stdout
     except (OSError, subprocess.CalledProcessError):
-        return [
-            p
-            for p in Path(".").rglob("*")
-            if p.is_file() and not (set(p.parts) & SKIP_DIRS)
-        ]
+        return [p for p in Path(".").rglob("*") if p.is_file() and not (set(p.parts) & SKIP_DIRS)]
     files = [Path(p) for p in out.split("\0") if p]
     if files:
         return files
-    return [
-        p
-        for p in Path(".").rglob("*")
-        if p.is_file() and not (set(p.parts) & SKIP_DIRS)
-    ]
+    return [p for p in Path(".").rglob("*") if p.is_file() and not (set(p.parts) & SKIP_DIRS)]
 
 
 def _scan_lines(lines: list[str], rules: list[tuple[str, re.Pattern[str]]], label: str) -> int:
