@@ -897,38 +897,33 @@ class BrokerStore:
         Raises ``ValueError`` on any precondition failure and ``RuntimeError``
         on CA-key or ``ssh-keygen`` failures.
         """
-        now = now or int(time.time())
-        request = self.get_broker_request(request_id, now)
-
-        self._require_original_client(request, client)
-        if request["status"] == "expired" or (request["status"] == "approved" and request["expires_at"] < now):
-            raise ValueError("request has expired")
-        if request["status"] != "approved":
-            raise ValueError("request is not approved")
-        if request["lease_json"] is None:
-            raise ValueError("no active lease")
-
-        lease_data = json.loads(request["lease_json"])
-        if lease_data["expires_at"] < now:
-            raise ValueError("lease has expired")
-
-        stored_fingerprint = request["ssh_fingerprint"]
+        # Parse untrusted key material before taking the issuance lock. Every
+        # authority decision and the production clock sample belong inside it.
         submitted_fingerprint = _public_key_fingerprint(ssh_public_key)
-        if submitted_fingerprint != stored_fingerprint:
-            raise ValueError("public key fingerprint does not match the original request")
-
-        if cert_signer is None:
-            self._audit(
-                request_id,
-                "certificate_gate_checked",
-                f"certificate gate checked for {client.identity}, fingerprint {stored_fingerprint}",
-                now,
-            )
-            return "not_ready"
-
-        # Atomic: verify one-time gate, sign, and consume in lock
         with self._lock:
+            now = now if now is not None else int(time.time())
             request = self.get_broker_request(request_id, now)
+            self._require_original_client(request, client)
+            if request["status"] == "expired" or (request["status"] == "approved" and request["expires_at"] < now):
+                raise ValueError("request has expired")
+            if request["status"] != "approved":
+                raise ValueError("request is not approved")
+            if request["lease_json"] is None:
+                raise ValueError("no active lease")
+            if json.loads(request["lease_json"])["expires_at"] < now:
+                raise ValueError("lease has expired")
+            stored_fingerprint = request["ssh_fingerprint"]
+            if submitted_fingerprint != stored_fingerprint:
+                raise ValueError("public key fingerprint does not match the original request")
+
+            if cert_signer is None:
+                self._audit(
+                    request_id,
+                    "certificate_gate_checked",
+                    f"certificate gate checked for {client.identity}, fingerprint {stored_fingerprint}",
+                    now,
+                )
+                return "not_ready"
             if request["certificate_fetched"]:
                 raise ValueError("certificate has already been fetched")
 
@@ -936,7 +931,6 @@ class BrokerStore:
             # ssh-keygen's uint64, and unpredictable to the requester.
             serial = secrets.randbits(63)
             certificate = cert_signer.sign(ssh_public_key, str(serial))
-
             self._connection.execute(
                 "UPDATE broker_requests SET certificate_fetched = 1, certificate_serial = ? WHERE request_id = ?",
                 (serial, request_id),
@@ -947,7 +941,6 @@ class BrokerStore:
                 f"certificate issued for {client.identity}, serial {serial}, fingerprint {stored_fingerprint}",
                 now,
             )
-
         return certificate
 
     def _reconstruct_canonical(self, request: dict[str, Any]) -> CanonicalRequest:
@@ -1439,7 +1432,7 @@ def create_broker_app_from_env() -> FastAPI:
         try:
             CertificatePolicy(source=cert_source)
         except ValueError as exc:
-            raise RuntimeError("PVE_BROKER_CERT_SOURCE must contain restricted CIDRs") from exc
+            raise RuntimeError("PVE_BROKER_CERT_SOURCE must be a restricted CIDR") from exc
     mtls_clients_json = os.environ.get("PVE_BROKER_MTLS_CLIENTS_JSON", "")
     extractor: MtlsIdentityExtractor = RejectingExtractor()
     if mtls_clients_json:

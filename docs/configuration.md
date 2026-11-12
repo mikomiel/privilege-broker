@@ -43,7 +43,7 @@ SQLite connection at shutdown.
 | `PVE_BROKER_ENROLLMENT_ENABLED` | Defaults to disabled; only the value `true` enables initial bootstrap enrollment |
 | `PVE_BROKER_MTLS_CLIENTS_JSON` | Explicit identity-to-observed-IP map; unset rejects all agent calls. A value may be one address or a non-empty list, for example `{"agent-demo":"192.0.2.10"}` |
 | `PVE_BROKER_CA_KEY_PATH` | Optional private, unencrypted OpenSSH CA key for local `ssh-keygen`; absent returns `not_ready` for certificate fetch |
-| `PVE_BROKER_CERT_SOURCE` | Required when CA signing is configured: explicit restricted CIDR or comma-separated CIDRs |
+| `PVE_BROKER_CERT_SOURCE` | Required when CA signing is configured: one explicit restricted CIDR (lists are not supported) |
 | `PVE_BROKER_NOTIFY_WEBHOOK_FILE` | Optional private file containing the server-owned Discord webhook URL |
 
 The factory does not create keys, install a TLS frontend, populate a target

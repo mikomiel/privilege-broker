@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -1668,6 +1671,90 @@ class TestExpiredRequest:
             store.begin_authentication(request_id, now=now + 10)
 
 
+@pytest.mark.parametrize(
+    ("deadline_kind", "persist_expired"),
+    [("request", False), ("request", True), ("lease", False)],
+    ids=["request-deadline-passes", "reader-persists-expired", "lease-deadline-passes"],
+)
+def test_certificate_rechecks_expiry_after_validation_before_issuance(
+    store, signer, extractor, monkeypatch, deadline_kind, persist_expired
+):
+    created_at = 1_000_000
+    _, request_id, deadline = store.create_broker_request(
+        "ct.reboot",
+        9001,
+        "expiry race",
+        "operator",
+        "agent-demo",
+        extractor.extract(),
+        _VALID_PUB_KEY,
+        policy=_POLICY,
+        now=created_at,
+    )
+    approval_time = deadline - 10 if deadline_kind == "request" else created_at
+    lease_factory = broker.LeaseFactory(signer, _POLICY)
+    if deadline_kind == "lease":
+        # A shorter, genuinely signed capability is within the protocol's TTL
+        # bound. It lets this refusal be tested independently of request expiry.
+        class ShortLeaseFactory(broker.LeaseFactory):
+            def create_lease(self, **kwargs):
+                lease = super().create_lease(**kwargs)
+                return signer.sign_lease(replace(lease, expires_at=lease.issued_at + 60, signature=""))
+
+        lease_factory = ShortLeaseFactory(signer, _POLICY)
+    store.begin_authentication(request_id, now=approval_time)
+    store.approve(
+        request_id,
+        {"id": "credential-1", "proof": "verified"},
+        FakeVerifier(),
+        lease_factory,
+        now=approval_time,
+    )
+    lease_deadline = json.loads(store.get_broker_request(request_id, now=approval_time)["lease_json"])["expires_at"]
+    if deadline_kind == "request":
+        assert lease_deadline > deadline
+    else:
+        assert lease_deadline < deadline
+    crossing = deadline if deadline_kind == "request" else lease_deadline
+    clock = [crossing - 1]
+    monkeypatch.setattr(svc.time, "time", lambda: clock[0])
+    reached = threading.Event()
+    resume = threading.Event()
+    original_fingerprint = svc._public_key_fingerprint
+
+    def pause_after_fingerprint(key):
+        result = original_fingerprint(key)
+        reached.set()
+        assert resume.wait(5), "test did not release the fetcher"
+        return result
+
+    class RecordingSigner:
+        calls = 0
+
+        def sign(self, key, serial):
+            self.calls += 1
+            return "synthetic certificate"
+
+    certificate_signer = RecordingSigner()
+    monkeypatch.setattr(svc, "_public_key_fingerprint", pause_after_fingerprint)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(
+            store.fetch_certificate_gate, request_id, extractor.extract(), _VALID_PUB_KEY, certificate_signer
+        )
+        try:
+            assert reached.wait(5), "fetcher did not reach the validation barrier"
+            clock[0] = crossing + 1
+            if persist_expired:
+                assert store.get_broker_request(request_id)["status"] == "expired"
+        finally:
+            resume.set()
+        with pytest.raises(ValueError, match="expired"):
+            future.result(timeout=5)
+    assert certificate_signer.calls == 0
+    assert store.get_broker_request(request_id)["certificate_fetched"] == 0
+    assert "certificate_issued" not in [event["event"] for event in store.audit_events(request_id)]
+
+
 class TestPublicKeyEndpoint:
     def test_public_key_endpoint_returns_openssh_key(
         self, store: _BrokerStore, signer: _LeaseSigner, extractor: FixedIdentityExtractor, client_factory
@@ -1919,6 +2006,29 @@ class TestFactoryFromEnv:
         app = svc.create_broker_app_from_env()
         assert client_factory(app).get("/health").json() == {"status": "ok"}
 
+    def test_lifespan_closes_the_real_factory_owned_connection(self, complete_env, monkeypatch, resources):
+        original = svc.BrokerStore
+        opened = []
+
+        class RecordingStore(original):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                opened.append(self)
+
+        monkeypatch.setattr(svc, "BrokerStore", RecordingStore)
+        app = svc.create_broker_app_from_env()
+        resources.callback(opened[0].close)
+        with TestClient(app) as client:
+            assert client.get("/health").json() == {"status": "ok"}
+            assert opened[0].connection.execute("SELECT 1").fetchone()[0] == 1
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            opened[0].connection.execute("SELECT 1")
+
+    def test_ca_requires_an_explicit_certificate_source(self, complete_env, monkeypatch):
+        monkeypatch.setenv("PVE_BROKER_CA_KEY_PATH", str(complete_env.with_name("unused-ca")))
+        with pytest.raises(RuntimeError, match="PVE_BROKER_CERT_SOURCE is required"):
+            svc.create_broker_app_from_env()
+
     def test_missing_policy_file_setting_is_incomplete(
         self, complete_env: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1943,10 +2053,13 @@ class TestFactoryFromEnv:
         with pytest.raises(RuntimeError, match="PVE_BROKER_POLICY_FILE is invalid"):
             svc.create_broker_app_from_env()
 
+    @pytest.mark.parametrize(
+        "source", ["192.0.2.20/32 ; rm -rf /", "192.0.2.0/24,198.51.100.0/24", "0.0.0.0/0", "::/0"]
+    )
     def test_malformed_certificate_source_refuses_to_start(
-        self, complete_env: Path, monkeypatch: pytest.MonkeyPatch
+        self, complete_env: Path, monkeypatch: pytest.MonkeyPatch, source
     ) -> None:
-        monkeypatch.setenv("PVE_BROKER_CERT_SOURCE", "192.0.2.20/32 ; rm -rf /")
+        monkeypatch.setenv("PVE_BROKER_CERT_SOURCE", source)
         with pytest.raises(RuntimeError, match="PVE_BROKER_CERT_SOURCE"):
             svc.create_broker_app_from_env()
 
@@ -1957,6 +2070,22 @@ class TestFactoryFromEnv:
 
 
 class TestStoreDiscipline:
+    def test_bootstrap_consumption_survives_reopen_and_secret_rotation(self, tmp_path, resources):
+        database = tmp_path / "persisted.sqlite3"
+        first = svc.BrokerStore(database, "first-synthetic-key")
+        resources.callback(first.close)
+        assert first.consume_bootstrap("first-synthetic-key") is True
+        first.close()
+        reopened = svc.BrokerStore(database, "rotated-synthetic-key")
+        resources.callback(reopened.close)
+        assert reopened.consume_bootstrap("rotated-synthetic-key") is False
+
+    def test_database_and_live_wal_sidecars_are_private(self, store, tmp_path):
+        for suffix in ("", "-wal", "-shm"):
+            path = tmp_path / ("broker.sqlite3" + suffix)
+            assert path.is_file()
+            assert path.stat().st_mode & 0o777 == 0o600
+
     def test_consume_bootstrap_compares_the_configured_key_not_the_environment(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, resources
     ) -> None:
