@@ -1,0 +1,24 @@
+schema: spec-driven
+
+context: |
+  privilege-broker is a standalone self-hosted approval and execution brokerage service.
+  PVE container operations are the first provider, extracted without changing their wire contracts.
+  The initial runtime uses Python, FastAPI, SQLite, WebAuthn and OpenSSH.
+  Authenticate agents, notify operators, bind passkey approval to one typed operation,
+  enforce authorization at a trusted executor and report the actual outcome.
+  Deployers own secrets, identities, target policy, routing, placement and backups.
+  Product builds and tests require no private infrastructure.
+  GitHub is the only forge. Source work does not authorize deployment or a release.
+  Write specifications in English. Distinguish planned, source, merged and runtime evidence.
+
+rules:
+  proposal:
+    - Bound the extraction and name non-goals.
+  design:
+    - Preserve the approval and execution boundaries, failure behaviour and rollback.
+    - Separate product ownership from deployment configuration.
+  specs:
+    - Use MUST for acceptance requirements and include refusal and recovery scenarios.
+  tasks:
+    - Require public-content scans, exact-head CI and independent review.
+    - Keep source extraction, consumer cutover and runtime acceptance separate.
