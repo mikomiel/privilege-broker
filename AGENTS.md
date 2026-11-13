@@ -67,6 +67,7 @@ git diff --check
   path.
 - A source change does not authorize a tag, a release, a package or image
   publication, an infrastructure write, a production probe or a deployment.
+  Each of these requires separate operator authorization.
 
 ## Content boundary
 
