@@ -6,8 +6,21 @@ interfaces, not arbitrary-shell execution or speculative provider frameworks.
 
 ## Changes and checks
 
-Use GitHub Issues for the product backlog. A behaviour change needs a concrete
-issue or an active OpenSpec change; do not duplicate its task list elsewhere.
+Use GitHub Issues as the repository work queue. Open or reuse a GitHub issue
+before starting repository work, including work covered by an active OpenSpec
+change. Keep technical design, acceptance criteria and source evidence in
+OpenSpec. Link each unfinished OpenSpec task to its issue. Do not duplicate the
+product backlog in another tracker.
+
+Link every PR to the issues it addresses. If the PR fully resolves an issue,
+put `Closes #<issue-number>` in the PR description. If the PR contributes only
+part of the work or is related to an issue, use `Refs #<issue-number>` instead.
+Do not use a closing reference when the issue has unmet acceptance criteria.
+Preserve generated PR content when adding links to automated PRs.
+
+For vulnerability reports, use the private route in [SECURITY.md](SECURITY.md).
+Do not publish exploit details or private deployment data in public issues.
+
 Keep one decision per PR and one writer per branch/worktree. Tests and the
 documentation for a behaviour change belong in the same PR.
 

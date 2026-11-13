@@ -4,6 +4,8 @@ GitHub is the only authoritative source and PR surface.
 
 ## Working contract
 
+- Follow the issue-first tracking and PR-link rules in
+  [CONTRIBUTING.md](CONTRIBUTING.md) for every repository change.
 - Keep one writer per branch and worktree. Preserve unrelated work.
 - Use isolated task branches and PRs to `main`; never rewrite published history.
 - Required checks and independent approval must identify the exact current

@@ -47,8 +47,11 @@ It is a library demonstration, not an authorization service.
 Read [architecture and extraction status](docs/architecture.md),
 [configuration](docs/configuration.md), [repository tooling](docs/repository-standards.md)
 and [the release process](docs/releases.md).
-The active [OpenSpec change](openspec/changes/extract-pve-foundation/proposal.md)
-owns the remaining agent interfaces, execution components and end-to-end acceptance.
+The [GitHub issue backlog](https://github.com/mikomiel/privilege-broker/issues)
+tracks remaining repository work. The active
+[OpenSpec change](openspec/changes/extract-pve-foundation/proposal.md) owns the
+technical design and acceptance criteria for the agent interfaces, execution
+components and end-to-end acceptance.
 See [configuration](docs/configuration.md#approval-service) for the explicit
 service factory and its TLS-frontend requirements. This is not a production-ready
 executor; local tests do not establish live deployment acceptance.
