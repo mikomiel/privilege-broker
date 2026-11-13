@@ -26,7 +26,7 @@ button:disabled {{ opacity: .35; cursor: not-allowed; }}
 #deny:hover:not(:disabled) {{ background: #b91c1c; }}
 </style>
 </head>
-<body>
+<body data-request-id="{request_id}" data-details="{details}" data-expires-at="{expires_at}">
 <main>
 <h1>PVE operation approval</h1>
 <dl id="details"></dl>
@@ -38,8 +38,8 @@ button:disabled {{ opacity: .35; cursor: not-allowed; }}
 </div>
 </main>
 <script>
-const id = {request_id};
-const details = {details};
+const id = JSON.parse(document.body.dataset.requestId);
+const details = JSON.parse(document.body.dataset.details);
 const bytes = value => Uint8Array.from(atob(value.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
 const b64 = value => btoa(String.fromCharCode(...new Uint8Array(value))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const labels = {{action: 'Action', ct_id: 'CT', reason: 'Reason', requester: 'Requester (self-declared)', self_reported_hostname: 'Self-reported hostname', mtls_identity: 'mTLS identity (verified)', observed_source_ip: 'Source IP', ssh_fingerprint: 'SSH public key fingerprint', digest: 'Request digest', expires_at: 'Expires', effect: 'Effect'}};
@@ -70,7 +70,7 @@ let pollTimer = setInterval(async () => {{
   }} catch (e) {{ /* ignore network errors */ }}
 }}, 3000);
 
-const expiresAt = {expires_at};
+const expiresAt = JSON.parse(document.body.dataset.expiresAt);
 function updateCountdown() {{
   const remaining = Math.max(0, Math.floor((expiresAt * 1000 - Date.now()) / 1000));
   const min = Math.floor(remaining / 60);

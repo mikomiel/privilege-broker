@@ -17,6 +17,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from dataclasses import replace
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -2156,36 +2157,49 @@ class TestPublicKeyEndpoint:
 # ===================================================================
 
 
+class PageDataParser(HTMLParser):
+    def __init__(self, page):
+        super().__init__(convert_charrefs=True)
+        self.body_data = {}
+        self.feed(page)
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "body":
+            self.body_data = dict(attrs)
+
+
 class TestPageEscaping:
     _SCRIPT_BREAKOUT = "</script><script>alert(1)</script>"
 
     def test_approval_page_does_not_let_request_fields_close_the_script(self, client: TestClient) -> None:
+        hostname = "a&b" + chr(0x2028) + "c"
         body = _body(
             reason=self._SCRIPT_BREAKOUT,
-            requester="<img src=x onerror=alert(2)>",
-            self_reported_hostname="a&b c",
+            requester='"><img src=x onerror=alert(2)>',
+            self_reported_hostname=hostname,
         )
         request_id = client.post("/v1/broker/requests", json=body).json()["request_id"]
-
         page = client.get(f"/v1/broker/requests/{request_id}/approval").text
-
         assert self._SCRIPT_BREAKOUT not in page
         assert "<img" not in page
-        assert " " not in page
-        # Exactly the template's own script block remains.
+        assert chr(0x2028) not in page
         assert page.count("</script>") == 1
-        # The browser still receives the original values once the JSON parses.
-        details_json = re.search(r"const details = (.*);\n", page).group(1)  # type: ignore[union-attr]
-        details = json.loads(details_json)
+        # Parse HTML entities and then JSON, just as the browser dataset does.
+        attributes = PageDataParser(page).body_data
+        details = json.loads(attributes["data-details"])
+        assert json.loads(attributes["data-request-id"]) == request_id
+        assert isinstance(json.loads(attributes["data-expires-at"]), int)
         assert details["reason"] == self._SCRIPT_BREAKOUT
-        assert details["requester"] == "<img src=x onerror=alert(2)>"
-        assert details["self_reported_hostname"] == "a&b c"
+        assert details["requester"] == body["requester"]
+        assert details["self_reported_hostname"] == hostname
 
     def test_enrollment_page_escapes_the_enrollment_id(self, client: TestClient) -> None:
         response = client.get("/v1/broker/enroll/%3Cimg%20src=x%20onerror=alert(1)%3E")
         assert response.status_code == 200
         assert "<img" not in response.text
-        assert '"\\u003cimg src=x onerror=alert(1)\\u003e"' in response.text
+        attributes = PageDataParser(response.text).body_data
+        assert json.loads(attributes["data-enrollment-id"]) == "<img src=x onerror=alert(1)>"
+        assert response.text.count("</script>") == 1
 
 
 # ===================================================================
@@ -2338,9 +2352,9 @@ class TestRequestPolicy:
             request_id = client.post("/v1/broker/requests", json=_body(action=action)).json()["request_id"]
             return client.get(f"/v1/broker/requests/{request_id}/approval").text
 
-        details = json.loads(re.search(r"const details = (.*);", page("ct.snapshot_prune")).group(1))  # type: ignore[union-attr]
+        details = json.loads(PageDataParser(page("ct.snapshot_prune")).body_data["data-details"])
         assert details["effect"] == "removes broker-* snapshots older than 11 days"
-        assert "effect" not in json.loads(re.search(r"const details = (.*);", page("ct.stop")).group(1))  # type: ignore[union-attr]
+        assert "effect" not in json.loads(PageDataParser(page("ct.stop")).body_data["data-details"])
 
     def test_lease_body_carries_no_openspec_field(self, client: TestClient) -> None:
         request_id = client.post("/v1/broker/requests", json=_body()).json()["request_id"]

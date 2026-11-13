@@ -10,6 +10,7 @@ request by default unless a verified mTLS context is supplied.
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import logging
 import os
@@ -389,13 +390,8 @@ class BrokerStore:
             self._connection.execute("ALTER TABLE broker_requests ADD COLUMN certificate_serial INTEGER")
 
     def _audit(self, request_id: str, event: str, summary: str, now: int) -> None:
-        # Takes the lock itself rather than trusting every call site: most
-        # callers already hold it (the lock is reentrant, so that is free), but
-        # fetch_lease and fetch_certificate_gate audit outside any critical
-        # section.  An unsynchronised write on the shared connection surfaces as
-        # `sqlite3.InterfaceError: bad parameter or other API misuse` under
-        # concurrency, which is what made test_concurrent_certificate_fetch_
-        # issues_once flake.
+        # Serialize the shared connection even for callers without a larger
+        # transition; authority paths already hold the reentrant store lock.
         with self._lock:
             self._connection.execute(
                 "INSERT INTO broker_audit_events (created_at, request_id, event, summary) VALUES (?, ?, ?, ?)",
@@ -1045,15 +1041,13 @@ def _http_error(exc: ValueError) -> HTTPException:
     return HTTPException(status_code=409, detail=str(exc))
 
 
-def _script_json(value: object) -> str:
-    """Serialise *value* for interpolation inside an HTML ``<script>`` block.
+def _html_json_attribute(value: object) -> str:
+    """JSON data for a quoted HTML attribute, never executable JavaScript.
 
-    The approval page shows agent-supplied text (reason, requester, hostname).
-    ``json.dumps`` alone lets ``</script>`` close the block; escaping ``<``,
-    ``>`` and ``&`` as JSON unicode escapes keeps the value inert and
-    unchanged once parsed. ``ensure_ascii`` already escapes U+2028/U+2029.
+    HTML parsing decodes entities before the page reads its dataset. JSON
+    parsing then restores the value without interpreting it as markup/code.
     """
-    return json.dumps(value, ensure_ascii=True).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+    return html.escape(json.dumps(value, ensure_ascii=True), quote=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1374,7 +1368,7 @@ def create_broker_app(
 
     @app.get("/v1/broker/enroll/{enrollment_id}", response_class=HTMLResponse)
     def enrollment_page(enrollment_id: str) -> str:
-        return _ENROLLMENT_HTML_TEMPLATE.format(enrollment_id=_script_json(enrollment_id))
+        return _ENROLLMENT_HTML_TEMPLATE.format(enrollment_id=_html_json_attribute(enrollment_id))
 
     # -- Approval ---------------------------------------------------------
 
@@ -1436,11 +1430,10 @@ def create_broker_app(
         if req["action"] == "ct.snapshot_prune":
             # The action takes no argument; what it deletes comes from policy.
             shown["effect"] = f"removes broker-* snapshots older than {policy.snapshot_retention_days} days"
-        details = _script_json(shown)
         return _APPROVAL_HTML_TEMPLATE.format(
-            request_id=_script_json(request_id),
-            details=details,
-            expires_at=_script_json(req["expires_at"]),
+            request_id=_html_json_attribute(request_id),
+            details=_html_json_attribute(shown),
+            expires_at=_html_json_attribute(req["expires_at"]),
         )
 
     # -- Browser status poll -----------------------------------------------
