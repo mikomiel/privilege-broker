@@ -8,16 +8,20 @@ Human-approved typed operations for AI agents, with Proxmox VE as the first inte
 For operators who want agents to request bounded actions without receiving a
 general shell or infrastructure-wide credentials.
 
-**Status: pre-release authorization foundation.** There is no runnable broker,
-passkey UI, notification sender or executor in this package yet. No existing
-deployment has switched to it, and no product release has been published.
+**Status: pre-release PVE approval service.** The package now includes a
+SQLite-backed WebAuthn service, passkey UI, server-owned Discord notifications
+and restricted SSH certificate signing. It has no agent bridge, execution
+worker, typed dispatcher or execution-outcome API yet. No existing deployment
+has switched to it, and no product release has been published.
 
-The extracted foundation can:
+The extracted source can:
 
 - Load a versioned PVE target policy and reject unknown actions or malformed grants.
 - Bind canonical requests to authenticated identity and execution arguments.
 - Sign and verify short-lived, single-dispatch capability leases.
-- Construct source-restricted SSH certificate arguments without executing commands.
+- Require a real passkey ceremony before releasing authorization to the same authenticated agent.
+- Sign a one-time-fetch SSH certificate with fixed principal, dispatcher and explicit source restriction.
+- Notify an operator without treating delivery or approval as execution success.
 
 ## Try the local example
 
@@ -44,7 +48,10 @@ Read [architecture and extraction status](docs/architecture.md),
 [configuration](docs/configuration.md), [repository tooling](docs/repository-standards.md)
 and [the release process](docs/releases.md).
 The active [OpenSpec change](openspec/changes/extract-pve-foundation/proposal.md)
-owns the remaining notification, approval service and execution stages.
+owns the remaining agent interfaces, execution components and end-to-end acceptance.
+See [configuration](docs/configuration.md#approval-service) for the explicit
+service factory and its TLS-frontend requirements. This is not a production-ready
+executor; local tests do not establish live deployment acceptance.
 
 ## Contributing
 
