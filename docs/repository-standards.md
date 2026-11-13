@@ -21,8 +21,12 @@ No automatic stale-issue closer is installed.
 
 ## Review and merge
 
-Required checks are `checks` and `public-content`, bound to GitHub Actions.
-The independent reviewer is the Gandalf App on the exact PR head. Trusted
+Required checks are `checks`, `public-content` and `review`, all bound to
+GitHub Actions. Main requires strict current-base checks and keeps admin
+enforcement, conversation resolution and force-push/deletion protection.
+The native approval count is zero: the required `review` status enforces
+exact-head independent approval instead of requesting a second native approval.
+The configured independent reviewer is the Gandalf App. Trusted
 `review-gate` and `automerge` workflows read their policy from the default
 branch and re-read immutable refs, complete CI, reviews and changed paths.
 They never execute PR-head code with a write token. Review events are only
@@ -39,20 +43,27 @@ or weakens protection. The repository owner retains GitHub administrative
 control, but changing these rules is an explicit maintainer decision, not an
 automation recovery path.
 
-## Bootstrap transition
+## Completed bootstrap
 
-The scaffold was published as the authorized one-time initial commit. Main
-currently uses strict required checks, stale-review dismissal, admin
-enforcement and one native independent approval. This temporary native-review
-requirement stays until trusted review-status publishing exists on main.
-The first governance/source PR must be human-merged; its own proposed writer
-workflows are not trusted to approve it.
+The initial scaffold contained read-only CI. The maintainer human-merged
+[PR #1](https://github.com/mikomiel/privilege-broker/pull/1) on 2026-11-12 as
+`e76d6054b1b6980697fb5b6cf8c9418074c2c08b`, after green exact-head CI and
+[Gandalf approval](https://github.com/mikomiel/privilege-broker/pull/1#pullrequestreview-5881218517).
+The reviewed source head was `db3157720f2148a78fce6d1c0f45a168037b44f1`.
+Its proposed writer workflows were not used to approve their own installation.
 
-After that merge, the maintainer must verify trusted status publishing and
-add the Actions-bound `review` context to protection. Only then can the
-native approval count be aligned to the existing single-maintainer App-status
-pattern without removing exact-head independent review. Missing App coverage
-or CI observation remains a blocker, never a reason to bypass protection.
+The App approval did not satisfy the scaffold's native-review count. The
+maintainer authorized a one-time bootstrap exception for PR #1 after verifying
+that existing approval and CI; no second review was requested. This historical
+exception is not a recovery path for later PRs.
+
+After merge, the trusted publisher's
+[successful run](https://github.com/mikomiel/privilege-broker/actions/runs/43309803906)
+wrote a `review` status as GitHub Actions. An unreviewed new PR remained
+`pending`, rather than inheriting PR #1's approval. Protection then added the
+Actions-bound `review` context while retaining native approval count zero.
+Missing App coverage or CI evidence still blocks merge; an authoring agent
+does not weaken these protections.
 
 ## Security and supply chain
 
