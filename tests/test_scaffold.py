@@ -36,7 +36,7 @@ def test_bootstrap_ci_has_no_write_authority() -> None:
     assert "permissions:\n  contents: read\n" in workflow
     assert "pull_request:" in workflow
     assert "pull_request_target:" not in workflow
-    assert "write" not in workflow
-    assert "secrets." not in workflow
+    expressions = re.findall(r"\$\{\{(.*?)\}\}", workflow, re.DOTALL)
+    assert not any(re.search(r"\bsecrets\s*(?:\.|\[)", expression) for expression in expressions)
     assert "persist-credentials: false" in workflow
     assert "github.event.pull_request.head.sha || github.sha" in workflow

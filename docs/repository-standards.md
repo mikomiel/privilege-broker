@@ -76,6 +76,8 @@ messages before public push and in CI.
 
 Optional community features, a second administrator, coverage quotas and
 artifact publication are not installed merely to improve a score. There is
-no UI screenshot because no runnable UI has been extracted. There is no
-release or artifact attestation claim because nothing has been published.
+no browser or hardware-passkey acceptance claim: the approval UI is packaged,
+but its local tests use software authenticator crypto and HTML checks. There
+is no product-release or artifact-attestation claim; no product artifact has
+been published.
 See [releases.md](releases.md) for release-please and its explicit publication gate.

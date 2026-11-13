@@ -14,8 +14,8 @@
 
 ## 3. Approval service and notifications
 
-- [ ] 3.1 Extract the approval store and WebAuthn HTTP service without changing existing PVE requests or database meaning; verify mTLS isolation, enrollment bootstrap, origin/user verification, challenge binding, expiry and concurrent certificate issuance tests.
-- [ ] 3.2 Extract server-owned Discord delivery and safe audit behaviour; verify escaping, fixed destinations, disabled delivery and failure without approval or credential disclosure; document notification configuration.
+- [x] 3.1 Extract the approval store and WebAuthn HTTP service without changing existing PVE requests or database meaning; verify mTLS isolation, enrollment bootstrap, origin/user verification, challenge binding, expiry and concurrent certificate issuance tests.
+- [x] 3.2 Extract server-owned Discord delivery and safe audit behaviour; verify escaping, fixed destinations, disabled delivery and failure without approval or credential disclosure; document notification configuration.
 - [ ] 3.3 Expose distinct approval and execution states to the authenticated agent without claiming completion from approval; verify cross-identity refusals and authorized-but-not-executed status tests and document the contract.
 
 ## 4. PVE execution components
