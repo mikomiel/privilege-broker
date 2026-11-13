@@ -70,9 +70,9 @@ git diff --check
 
 ## Content boundary
 
-- Source, fixtures, commit messages and artifacts must not contain
-  credentials, real deployment identifiers, internal addresses, webhook URLs
-  or a private runbook. Use synthetic documentation addresses and targets.
+- Source, fixtures, messages and artifacts must not contain credentials, real
+  deployment identifiers, internal addresses, webhook URLs or a private
+  runbook. Messages include commit messages and pull-request text. Use synthetic documentation addresses and targets.
 - Do not use production credentials in tests. Do not put a secret in a
   notification.
 - A request body field or a self-reported name does not establish identity.
