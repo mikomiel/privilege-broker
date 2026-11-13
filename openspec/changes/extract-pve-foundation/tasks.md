@@ -20,7 +20,7 @@
 
 ## 4. PVE execution components
 
-- [ ] 4.1 Extract the agent bridge, client and worker using explicit endpoints, trust and state configuration; verify pre-dispatch transient retry, expiry, lost-certificate terminal failure and no secret-bearing output.
+- [x] 4.1 Extract the agent bridge, client and worker using explicit endpoints, trust and state configuration; verify pre-dispatch transient retry, expiry, lost-certificate terminal failure and no secret-bearing output. [Issue #8](https://github.com/mikomiel/privilege-broker/issues/8).
 - [ ] 4.2 Extract the typed dispatcher and replay store; verify fixed argv, current policy, source/certificate constraints, wrong-node routing, concurrent single claim and restart replay protection.
 - [ ] 4.3 Preserve policy-bounded snapshot pruning and its approval display; verify synthetic old/unrelated/retained snapshot cases and update PVE operation documentation.
 

@@ -10,6 +10,9 @@ Notification delivery is separate and never an authorization decision.
 - `privilege_broker.pve.authorization`: immutable requests, proxy identity extraction, signed leases and restricted certificate argv.
 - `privilege_broker.pve.service`: SQLite approval state, real WebAuthn registration/authentication, browser UI and one-time certificate fetch.
 - `privilege_broker.notifications`: server-owned Discord delivery with credential-safe errors and inert agent text.
+- `privilege_broker.pve.client`: mTLS broker HTTP client; the endpoint and trust material are explicit constructor input and transient failures classify separately from final refusals.
+- `privilege_broker.pve.bridge`: agent-side request creation with an ephemeral Ed25519 key, strict response validation and pending-input publication.
+- `privilege_broker.pve.worker`: poll-and-dispatch worker that fetches the lease and the one-time certificate, tries the configured nodes in order and writes terminal result files.
 
 The approval service requires explicitly supplied store, signer and target
 policy. Its environment factory requires private deployment configuration;
@@ -20,8 +23,19 @@ and service isolation are owned by deployment, not by request bodies.
 Browser approval signs a short-lived PVE lease but returns only approval
 status. The bound agent can fetch that lease and a restricted SSH certificate.
 The signer runs only local `ssh-keygen`, not an SSH connection or PVE command.
-No execution worker, target dispatcher or outcome ingestion exists here yet.
-An `approved` request is not an executed operation.
+The bridge and worker exist; the target dispatcher, durable claim store and
+outcome ingestion do not (OpenSpec tasks 4.2 and 5.1). An `approved` request
+is not an executed operation.
+
+The bridge, client and worker take explicit configuration only: they read no
+environment variable and carry no built-in address, path or identity, so a
+missing value fails closed. The worker keeps the broker wire contract
+unchanged: the lease is fetched once, the certificate is fetched once and the
+dispatcher receives `{"action", "ct_id", "lease", "signature"}` on stdin over
+fixed non-interactive SSH options. Terminal results are `succeeded`, `failed`,
+`unknown` (transport timeout; never retried), `error`, `denied`, `cancelled`
+and `expired`. Key and certificate material never appears in results or logs,
+and a consumed certificate is never re-requested.
 
 ## Compatibility and extraction adaptations
 
@@ -60,8 +74,8 @@ delivery is not durable. Product acceptance remains incomplete.
 ## Remaining product stages
 
 The active [OpenSpec change](../openspec/changes/extract-pve-foundation/proposal.md)
-owns authenticated agent lifecycle/outcome interfaces, the bridge, worker,
-dispatcher and end-to-end acceptance. Consumer pinning, deployment and live
+owns the target dispatcher and replay store, the outcome interfaces and
+end-to-end acceptance. Consumer pinning, deployment and live
 PVE acceptance are separate gates. No current consumer has switched.
 
 PVE is the only initial provider. There is no dynamic plugin system, arbitrary
@@ -75,11 +89,14 @@ The extraction uses the owned ai-agents snapshot
 
 | Original file | Product boundary |
 | --- | --- |
-| `MCPs/servers/_pve_common.py` | Policy and canonicalization only; no transport client |
+| `MCPs/servers/_pve_common.py` | Policy, canonicalization and the mTLS broker client; no transport server |
 | `MCPs/servers/pve_ssh_broker.py` | Authorization and certificate argv |
 | `MCPs/servers/pve_ssh_broker_service.py` | Approval store, service, passkey UI and certificate signer |
+| `MCPs/servers/pve_broker_mcp.py` | Agent bridge: request validation, ephemeral key, input publication |
+| `MCPs/servers/pve_broker_worker.py` | Poll-and-dispatch worker: lease/certificate fetch, node failover, result files |
 | `MCPs/servers/_discord_notify.py` | Server-owned notifications, adapted to standalone HTTP and UTC |
 | `MCPs/tests/test_pve_ssh_broker*.py` | Ported synthetic contract tests, supplemented by real local crypto tests |
+| `MCPs/tests/test_pve_broker_mcp.py`, `MCPs/tests/test_pve_broker_worker.py` | Ported synthetic bridge and worker tests |
 
 Private source history, deployment configuration, trust roots, credentials
 and runbooks are not copied. Existing consumers retain their current source
