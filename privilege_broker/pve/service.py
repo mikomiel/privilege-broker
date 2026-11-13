@@ -18,7 +18,7 @@ import sqlite3
 import threading
 import time
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
@@ -310,6 +310,22 @@ class BrokerStore:
         with self._lock:
             self._connection.close()
 
+    @contextmanager
+    def _transaction(self):
+        """Acquire the SQLite writer before a fresh authority decision.
+
+        The caller already owns the store lock. Audit and consumption commit
+        together; refusal rolls back without releasing authority.
+        """
+        self._connection.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+            self._connection.execute("COMMIT")
+        except BaseException:
+            if self._connection.in_transaction:
+                self._connection.execute("ROLLBACK")
+            raise
+
     def _setup_schema(self) -> None:
         self._connection.executescript(
             """
@@ -507,8 +523,8 @@ class BrokerStore:
             if enrollment is None or enrollment["status"] != "pending" or enrollment["expires_at"] < checked_at:
                 raise ValueError("enrollment is not pending")
             verified = verifier.verify(credential, enrollment["challenge"])
-            now = now if now is not None else int(time.time())
-            if enrollment["expires_at"] < now:
+            checked_at = now if now is not None else int(time.time())
+            if enrollment["expires_at"] < checked_at:
                 raise ValueError("enrollment is not pending")
             passkey = BrokerPasskey(
                 verified.credential_id,
@@ -518,6 +534,9 @@ class BrokerStore:
             )
             self._connection.execute("BEGIN IMMEDIATE")
             try:
+                now = now if now is not None else int(time.time())
+                if enrollment["expires_at"] < now:
+                    raise ValueError("enrollment is not pending")
                 if self._connection.execute(
                     "SELECT 1 FROM broker_passkeys WHERE credential_id = ?",
                     (verified.credential_id,),
@@ -766,11 +785,11 @@ class BrokerStore:
             operator, new_sign_count = verifier.verify(credential, challenge_row["challenge"], passkey)
             if operator != passkey.operator:
                 raise ValueError("credential operator mismatch")
-            now = now if now is not None else int(time.time())
-            if request["expires_at"] < now:
-                self.get_broker_request(request_id, now)
+            checked_at = now if now is not None else int(time.time())
+            if request["expires_at"] < checked_at:
+                self.get_broker_request(request_id, checked_at)
                 raise ValueError("request is not awaiting approval")
-            if challenge_row["expires_at"] < now:
+            if challenge_row["expires_at"] < checked_at:
                 raise ValueError("challenge is expired or missing")
 
             lease = lease_factory.create_lease(
@@ -779,7 +798,7 @@ class BrokerStore:
                 action_classes=[request["action"]],
                 target_cts=[request["ct_id"]],
                 approval_id=request_id,
-                now=now,
+                now=checked_at,
             )
             lease_json = json.dumps(
                 {
@@ -801,6 +820,16 @@ class BrokerStore:
 
             self._connection.execute("BEGIN IMMEDIATE")
             try:
+                # Lease signing, serialization and SQLite writer acquisition
+                # can all outlast the earlier checks. Decide immediately before
+                # authority writes, inside the acquired transaction.
+                now = now if now is not None else int(time.time())
+                if request["expires_at"] < now:
+                    raise ValueError("request is not awaiting approval")
+                if challenge_row["expires_at"] < now:
+                    raise ValueError("challenge is expired or missing")
+                if lease.expires_at < now:
+                    raise ValueError("lease has expired")
                 self._connection.execute(
                     """UPDATE broker_requests SET
                         status = 'approved', approved_by = ?,
@@ -869,7 +898,7 @@ class BrokerStore:
 
         Only the original mTLS identity that created the request may fetch.
         """
-        with self._lock:
+        with self._lock, self._transaction():
             now = now if now is not None else int(time.time())
             request = self.get_broker_request(request_id, now)
             self._require_original_client(request, client)
@@ -913,7 +942,7 @@ class BrokerStore:
         # Parse untrusted key material before taking the issuance lock. Every
         # authority decision and the production clock sample belong inside it.
         submitted_fingerprint = _public_key_fingerprint(ssh_public_key)
-        with self._lock:
+        with self._lock, self._transaction():
             checked_at = now if now is not None else int(time.time())
             request = self.get_broker_request(request_id, checked_at)
             self._require_original_client(request, client)

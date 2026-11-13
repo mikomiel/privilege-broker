@@ -1977,6 +1977,158 @@ def test_expiry_during_verification_or_signing_cannot_commit_authority(
             assert "request_approved" not in events
 
 
+def _assert_no_approval_commit(store, request_id):
+    assert store.get_broker_request(request_id)["lease_json"] is None
+    assert store.list_passkeys()[0].sign_count == 0
+    assert (
+        store.connection.execute("SELECT 1 FROM broker_challenges WHERE request_id = ?", (request_id,)).fetchone()
+        is not None
+    )
+    assert "request_approved" not in [event["event"] for event in store.audit_events(request_id)]
+
+
+def test_approval_refuses_expiry_during_genuine_lease_signing(store, signer, extractor, monkeypatch):
+    _, request_id, deadline = store.create_broker_request(
+        "ct.reboot",
+        9001,
+        "lease signing expiry",
+        "operator",
+        "agent-demo",
+        extractor.extract(),
+        _VALID_PUB_KEY,
+        policy=_POLICY,
+        now=1_000_000,
+    )
+    store.begin_authentication(request_id, now=deadline - 10)
+    clock = [deadline - 1]
+    monkeypatch.setattr(svc.time, "time", lambda: clock[0])
+    signed = []
+
+    class AdvancingLeaseFactory(broker.LeaseFactory):
+        def create_lease(self, **kwargs):
+            lease = super().create_lease(**kwargs)
+            assert lease.signature
+            signed.append(lease)
+            clock[0] = deadline + 1
+            return lease
+
+    with pytest.raises(ValueError):
+        store.approve(
+            request_id,
+            {"id": "credential-1", "proof": "verified"},
+            FakeVerifier(),
+            AdvancingLeaseFactory(signer, _POLICY),
+        )
+    assert signed
+    _assert_no_approval_commit(store, request_id)
+
+
+@pytest.mark.parametrize("operation", ["approval", "registration", "certificate", "lease"])
+def test_transaction_acquisition_rechecks_deadlines_before_authority_writes(
+    store, empty_store, signer, extractor, monkeypatch, tmp_path, resources, operation
+):
+    if operation != "registration":
+        target = store
+        database = tmp_path / "broker.sqlite3"
+        _, request_id, deadline = target.create_broker_request(
+            "ct.reboot",
+            9001,
+            "transaction expiry",
+            "operator",
+            "agent-demo",
+            extractor.extract(),
+            _VALID_PUB_KEY,
+            policy=_POLICY,
+            now=1_000_000,
+        )
+        target.begin_authentication(request_id, now=deadline - 10)
+        if operation in {"certificate", "lease"}:
+            target.approve(
+                request_id,
+                {"id": "credential-1", "proof": "verified"},
+                FakeVerifier(),
+                broker.LeaseFactory(signer, _POLICY),
+                now=deadline - 10,
+            )
+    else:
+        target = empty_store
+        database = tmp_path / "empty.sqlite3"
+        enrollment_id, _, _ = target.begin_enrollment("operator", now=1_000_000)
+        deadline = 1_000_000 + svc.CHALLENGE_TTL_SECONDS
+    clock = [deadline - 1]
+    monkeypatch.setattr(svc.time, "time", lambda: clock[0])
+    native = target.connection
+    waiting = threading.Event()
+
+    class ObservedConnection:
+        def execute(self, sql, *args):
+            if (
+                sql == "BEGIN IMMEDIATE"
+                or "SET certificate_fetched = 1" in sql
+                or "INSERT INTO broker_audit_events" in sql
+            ):
+                waiting.set()
+            return native.execute(sql, *args)
+
+        def __getattr__(self, name):
+            return getattr(native, name)
+
+    monkeypatch.setattr(target, "_connection", ObservedConnection())
+    writer = sqlite3.connect(database, isolation_level=None)
+    resources.callback(writer.close)
+    writer.execute("BEGIN IMMEDIATE")
+
+    class CertificateSigner:
+        calls = 0
+
+        def sign(self, key, serial):
+            self.calls += 1
+            return "synthetic certificate"
+
+    certificate_signer = CertificateSigner()
+
+    def callback():
+        if operation == "lease":
+            return target.fetch_lease(request_id, extractor.extract())
+        if operation == "certificate":
+            return target.fetch_certificate_gate(request_id, extractor.extract(), _VALID_PUB_KEY, certificate_signer)
+        if operation == "approval":
+            return target.approve(
+                request_id,
+                {"id": "credential-1", "proof": "verified"},
+                FakeVerifier(),
+                broker.LeaseFactory(signer, _POLICY),
+            )
+        return target.complete_enrollment(
+            enrollment_id,
+            {"proof": "registered"},
+            FakeRegistrationVerifier(),
+            _ENROLLMENT_KEY,
+        )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(callback)
+        try:
+            assert waiting.wait(5), "transition did not reach real SQLite transaction acquisition"
+            clock[0] = deadline + 1
+        finally:
+            writer.execute("ROLLBACK")
+        with pytest.raises(ValueError):
+            future.result(timeout=5)
+    if operation == "approval":
+        _assert_no_approval_commit(target, request_id)
+    elif operation in {"certificate", "lease"}:
+        assert target.get_broker_request(request_id)["certificate_fetched"] == 0
+        assert certificate_signer.calls == 0
+        events = [event["event"] for event in target.audit_events(request_id)]
+        assert "lease_fetched" not in events
+        assert "certificate_issued" not in events
+    else:
+        assert not target.has_passkey()
+        assert target.connection.execute("SELECT COUNT(*) FROM broker_bootstrap_state").fetchone()[0] == 0
+        assert "enrollment_bootstrap_completed" not in [event["event"] for event in target.audit_events(enrollment_id)]
+
+
 class TestPublicKeyEndpoint:
     def test_public_key_endpoint_returns_openssh_key(
         self, store: _BrokerStore, signer: _LeaseSigner, extractor: FixedIdentityExtractor, client_factory

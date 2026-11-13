@@ -80,7 +80,37 @@ jobs:
           uv venv --python 3.12 "$RUNNER_TEMP/privilege-broker-wheel"
           uv pip install --python "$RUNNER_TEMP/privilege-broker-wheel/bin/python" dist/*.whl
           cd "$RUNNER_TEMP"
-          "$RUNNER_TEMP/privilege-broker-wheel/bin/python" -I -c 'from privilege_broker.pve.authorization import CertificatePolicy; assert "source-address=198.51.100.88/32" in CertificatePolicy(source="198.51.100.88/32").to_options(); from privilege_broker.pve.service import create_broker_app_from_env; assert callable(create_broker_app_from_env)'
+          "$RUNNER_TEMP/privilege-broker-wheel/bin/python" -I - <<'PY'
+          import asyncio
+          import json
+          import os
+          import secrets
+          import tempfile
+          from pathlib import Path
+          from privilege_broker.pve.authorization import CertificatePolicy, LeaseSigner
+          from privilege_broker.pve.service import create_broker_app_from_env
+
+          async def verify():
+              assert "source-address=198.51.100.88/32" in CertificatePolicy(source="198.51.100.88/32").to_options()
+              with tempfile.TemporaryDirectory() as directory:
+                  root = Path(directory)
+                  key = root / "lease.pem"
+                  key.write_bytes(LeaseSigner.generate().to_pem())
+                  key.chmod(0o600)
+                  policy = root / "policy.json"
+                  policy.write_text(json.dumps({"version": 2, "grants": {"ct.reboot": [9001]}, "snapshot_retention_days": 7}))
+                  os.environ.update(
+                      PVE_BROKER_DATABASE=str(root / "state.sqlite3"),
+                      PVE_BROKER_LEASE_KEY_PATH=str(key), PVE_BROKER_POLICY_FILE=str(policy),
+                      PVE_BROKER_RP_ID="broker.example.test", PVE_BROKER_ORIGIN="https://broker.example.test",
+                      PVE_BROKER_ENROLLMENT_KEY=secrets.token_urlsafe(24),
+                      PVE_BROKER_CA_KEY_PATH="", PVE_BROKER_CERT_SOURCE="", PVE_BROKER_NOTIFY_WEBHOOK_FILE="",
+                  )
+                  app = create_broker_app_from_env()
+                  async with app.router.lifespan_context(app):
+                      assert "/v1/broker/requests" in {route.path for route in app.routes}
+          asyncio.run(verify())
+          PY
 
   public-content:
     name: public-content
