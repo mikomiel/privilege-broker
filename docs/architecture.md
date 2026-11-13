@@ -23,6 +23,18 @@ The signer runs only local `ssh-keygen`, not an SSH connection or PVE command.
 No execution worker, target dispatcher or outcome ingestion exists here yet.
 An `approved` request is not an executed operation.
 
+The authenticated agent reads its request through
+`GET /v1/broker/requests/{request_id}`; only the original mTLS identity and
+observed source address may read it, and a cross-identity read is refused
+without disclosing any request field. The response carries the approval
+lifecycle as `status` (`pending`, `approved`, `denied`, `expired` or
+`cancelled`; `approved` means authorized) plus a separate `execution_state`
+from a closed vocabulary (`not_executed`, `executing`, `succeeded`, `failed`,
+`uncertain`). The broker reports only `not_executed`: approval, lease fetch and
+certificate issuance are authorization events, never execution evidence, and
+no agent-supplied execution evidence is accepted. An uncertain outcome is
+never reported as success.
+
 ## Compatibility and extraction adaptations
 
 The wire versions remain `pve-operate-v1`, `pve-approval-v1` and
