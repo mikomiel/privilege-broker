@@ -6,6 +6,9 @@ import io
 import json
 import ssl
 import urllib.error
+import urllib.request
+import urllib.response
+from email.message import Message
 
 import pytest
 
@@ -173,3 +176,71 @@ def test_http_error_detail_is_truncated() -> None:
 def test_transport_failures_are_broker_unavailable(failure: Exception) -> None:
     with pytest.raises(BrokerUnavailable, match="broker unavailable"):
         _client(_FakeOpener([failure])).request("GET", "/x")
+
+
+@pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+@pytest.mark.parametrize(
+    "location",
+    [
+        "http://broker.example.test/redirected",
+        "https://other.example.test/redirected",
+        "https://broker.example.test/redirected",
+    ],
+)
+def test_default_opener_rejects_redirects_before_contacting_the_destination(status: int, location: str) -> None:
+    """Use urllib's real error/redirect chain; replace only network transport."""
+    contacted = []
+
+    class Transport(urllib.request.BaseHandler):
+        def default_open(self, request):
+            contacted.append(request.full_url)
+            headers = Message()
+            code = status if len(contacted) == 1 else 200
+            if code != 200:
+                headers["Location"] = location
+            response = urllib.response.addinfourl(
+                io.BytesIO(b'{"status":"approved"}'), headers, request.full_url, code
+            )
+            response.msg = "Found" if code != 200 else "OK"
+            return response
+
+    client = BrokerClient(CONFIG, ssl_context=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT))
+    client._opener.add_handler(Transport())
+    with pytest.raises(BrokerHTTPError) as excinfo:
+        client.request("GET", "/x")
+    assert excinfo.value.status == status
+    assert contacted == ["https://broker.example.test/x"]
+
+
+@pytest.mark.parametrize("status", [409, 429, 502, 503, 504])
+def test_error_body_read_is_bounded_and_response_is_closed(status: int) -> None:
+    class ErrorBody(io.BytesIO):
+        def __init__(self):
+            super().__init__(b"x" * 5000)
+            self.read_sizes = []
+
+        def read(self, size=-1):
+            self.read_sizes.append(size)
+            assert 0 < size <= 1025, "error body must never be read without a finite detail limit"
+            return super().read(size)
+
+    body = ErrorBody()
+    error = urllib.error.HTTPError("https://broker.example.test/x", status, "err", None, body)
+    expected = BrokerHTTPError if status == 409 else BrokerUnavailable
+    with pytest.raises(expected, match=f"broker HTTP {status}") as excinfo:
+        _client(_FakeOpener([error])).request("GET", "/x")
+    assert body.read_sizes == [1025]
+    assert body.closed
+    assert len(str(excinfo.value)) <= len(f"broker HTTP {status}: ") + 1024 + 3
+
+
+def test_error_response_is_closed_when_its_body_read_fails() -> None:
+    class BrokenBody(io.BytesIO):
+        def read(self, size=-1):
+            raise OSError("synthetic stream failure")
+
+    body = BrokenBody()
+    error = urllib.error.HTTPError("https://broker.example.test/x", 503, "err", None, body)
+    with pytest.raises(BrokerUnavailable, match="broker HTTP 503"):
+        _client(_FakeOpener([error])).request("GET", "/x")
+    assert body.closed

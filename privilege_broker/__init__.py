@@ -1,4 +1,5 @@
 """Human-approved typed operations for AI agents.
 
-Only the PVE authorization foundation is implemented at this stage.
+The PVE package contains authorization, approval and agent-side dispatch.
+Target-side execution components are not extracted yet.
 """

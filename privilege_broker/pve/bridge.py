@@ -10,7 +10,9 @@ URL.
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -85,8 +87,8 @@ class ApprovalBridge:
         """Request an approval-gated typed operation; nothing runs until approved.
 
         Returns ``request_id``, ``status``, ``expires_at`` and the
-        ``approval_url`` to hand to the operator. The ephemeral private key is
-        removed again if the broker call or the response validation fails.
+        ``approval_url`` to hand to the operator. On failure, remove the key
+        and temporary input created by this attempt. Publish complete JSON only.
         """
         if action not in TYPED_ACTIONS:
             raise ValueError(f"action must be one of {sorted(TYPED_ACTIONS)}")
@@ -97,13 +99,19 @@ class ApprovalBridge:
 
         private_key = Ed25519PrivateKey.generate()
         key_id = uuid.uuid4().hex
-        self._keys_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         key_path = self._keys_dir / f"{key_id}.key"
-        key_path.write_bytes(private_key.private_bytes(Encoding.PEM, PrivateFormat.OpenSSH, NoEncryption()))
-        key_path.chmod(0o600)
-        public_key = private_key.public_key().public_bytes(Encoding.OpenSSH, PublicFormat.OpenSSH).decode("ascii")
-
+        key_created = False
+        published = False
+        temporary_path: Path | None = None
         try:
+            self._keys_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            key_created = True
+            with os.fdopen(fd, "wb") as key_file:
+                key_file.write(private_key.private_bytes(Encoding.PEM, PrivateFormat.OpenSSH, NoEncryption()))
+                key_file.flush()
+                os.fsync(key_file.fileno())
+            public_key = private_key.public_key().public_bytes(Encoding.OpenSSH, PublicFormat.OpenSSH).decode("ascii")
             response = client.request(
                 "POST",
                 "/v1/broker/requests",
@@ -116,28 +124,45 @@ class ApprovalBridge:
                 },
             )
             request_id, expires_at = self._validated_create_response(response)
-        except Exception:
-            # The ephemeral private key never survives a failed request.
-            key_path.unlink(missing_ok=True)
-            raise
-
-        self._input_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        input_data = {
-            "request_id": request_id,
-            "action": action,
-            "ct_id": ct_id,
-            "reason": reason,
-            "public_key": public_key,
-            "key_id": key_id,
-            "expires_at": expires_at,
-        }
-        (self._input_dir / f"{request_id}.json").write_text(json.dumps(input_data), encoding="utf-8")
-        return {
-            "request_id": request_id,
-            "status": "pending",
-            "expires_at": expires_at,
-            "approval_url": f"{self._config.public_url.rstrip('/')}/v1/broker/requests/{request_id}/approval",
-        }
+            self._input_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            input_data = {
+                "request_id": request_id,
+                "action": action,
+                "ct_id": ct_id,
+                "reason": reason,
+                "public_key": public_key,
+                "key_id": key_id,
+                "expires_at": expires_at,
+            }
+            # The worker ignores .tmp files. Rename on the same filesystem
+            # only after writing and flushing a complete request.
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=self._input_dir,
+                prefix=f".{request_id}.",
+                suffix=".tmp",
+                delete=False,
+            ) as pending:
+                temporary_path = Path(pending.name)
+                json.dump(input_data, pending)
+                pending.flush()
+                os.fsync(pending.fileno())
+            os.replace(temporary_path, self._input_dir / f"{request_id}.json")
+            published = True
+            return {
+                "request_id": request_id,
+                "status": "pending",
+                "expires_at": expires_at,
+                "approval_url": f"{self._config.public_url.rstrip('/')}/v1/broker/requests/{request_id}/approval",
+            }
+        finally:
+            try:
+                if temporary_path is not None:
+                    temporary_path.unlink(missing_ok=True)
+            finally:
+                if key_created and not published:
+                    key_path.unlink(missing_ok=True)
 
     def read_status(self, request_id: str) -> dict[str, Any]:
         """Return the worker's terminal result, ``pending``, or ``unknown``."""

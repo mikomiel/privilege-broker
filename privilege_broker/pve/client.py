@@ -73,6 +73,14 @@ def _truncate(text: str, limit: int = _DETAIL_LIMIT) -> str:
     return text if len(text) <= limit else text[:limit] + "..."
 
 
+class _RejectRedirects(urllib.request.HTTPRedirectHandler):
+    """Keep every request at its configured endpoint, including mTLS credentials."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # Returning None makes urllib raise HTTPError without opening newurl.
+        return None
+
+
 class BrokerClient:
     """mTLS HTTP client for the PVE approval broker.
 
@@ -98,6 +106,7 @@ class BrokerClient:
             # must reach the broker directly.
             opener = urllib.request.build_opener(
                 urllib.request.ProxyHandler({}),
+                _RejectRedirects(),
                 urllib.request.HTTPSHandler(context=ssl_context),
             )
         self._opener = opener
@@ -123,9 +132,11 @@ class BrokerClient:
                 raw = response.read(_MAX_BODY_BYTES + 1)
         except urllib.error.HTTPError as exc:
             try:
-                detail = exc.read().decode("utf-8", errors="replace")
+                detail = exc.read(_DETAIL_LIMIT + 1).decode("utf-8", errors="replace")
             except OSError:
                 detail = ""
+            finally:
+                exc.close()
             message = f"broker HTTP {exc.status}: {_truncate(detail)}"
             if exc.status in _RETRYABLE_STATUSES:
                 raise BrokerUnavailable(message) from exc

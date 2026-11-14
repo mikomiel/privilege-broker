@@ -128,19 +128,35 @@ worker_config = WorkerConfig(
 )
 ```
 
+The client connects directly to the configured HTTPS endpoint with environment
+proxies disabled. It rejects every redirect, including same-origin redirects,
+rather than forwarding the mTLS context or accepting a downgrade to HTTP.
+HTTP error bodies are read only up to the detail limit and closed, including
+when a body read fails; producing an error message does not drain the response.
+
 `bridge.request_mutation(action, ct_id, reason, client)` validates the typed
-action, target and reason, writes an ephemeral Ed25519 key (removed again on any
-failure), creates the broker request and publishes
-`input/{request_id}.json`; it returns the `approval_url`. `bridge.read_status`
-returns the worker result, `pending` or `unknown`.
+action, target and reason. It creates an ephemeral Ed25519 key exclusively
+with mode `0600`, creates the broker request and writes a private temporary
+input file. Only a complete, flushed JSON file is renamed to
+`input/{request_id}.json`, so the worker cannot read a partial publication.
+The method returns the `approval_url`; `bridge.read_status` returns the worker
+result, `pending` or `unknown`.
+
+If creation or publication fails, cleanup removes the key and temporary input
+created by that attempt. An existing key is neither overwritten nor removed.
+Cleanup covers failures that return through Python; process termination or a
+filesystem that refuses deletion can leave files. No orphan-recovery sweeper
+is implemented. Deployers own state-directory protection and recovery.
 
 The worker polls `input/` once per `process_pending_once(client, worker_config)`
 call (or forever via `run`). A request past its deadline plus `expiry_grace` is
 expired locally without asking the broker, which bounds all retries. Transient
 broker failures (network, timeout, HTTP 429/502/503/504) before dispatch keep
-the request for the next poll; any final refusal is terminal — in particular
-HTTP 409 after a lost certificate reply ends the request as `error` and never
-requests a second certificate. Dispatch uses fixed non-interactive SSH options
+the request for the next poll. Final status-poll refusals, including HTTP
+401/403/404, finish as `error` and remove the pending input and key rather than
+polling until expiry. Unusable status replies that raise an error are also
+terminal. HTTP 409 after a lost certificate reply ends the request as `error`
+and never requests a second certificate. Dispatch uses fixed non-interactive SSH options
 (`BatchMode`, `IdentitiesOnly`, no TTY, pinned known hosts, configured port) and
 sends `{"action", "ct_id", "lease", "signature"}` on stdin, preserving the
 dispatcher wire contract. A node that does not host the target answers exit 3

@@ -46,7 +46,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from .client import BrokerClient, BrokerUnavailable
+from .client import BrokerClient, BrokerHTTPError, BrokerUnavailable
 
 _LOG = logging.getLogger("privilege_broker.pve.worker")
 
@@ -287,10 +287,20 @@ def process_pending_once(
             continue
         try:
             status_resp = client.request("GET", f"/v1/broker/requests/{request_id}")
-        except (RuntimeError, OSError) as exc:
-            # Broker availability and rate limiting are transient; the local
-            # expiry above bounds the retries.
+        except BrokerUnavailable as exc:
+            # Only classified availability failures are safe to retry.
             log.warning("request %s: broker status unavailable: %s", request_id, exc)
+            continue
+        except (RuntimeError, OSError) as exc:
+            # Do not retry final refusals or unusable replies, and do not
+            # copy the broker's response body into results or logs.
+            error = (
+                f"broker status HTTP {exc.status}"
+                if isinstance(exc, BrokerHTTPError)
+                else "broker status response unusable"
+            )
+            log.warning("request %s: %s", request_id, error)
+            _finish(config, request_id, input_file, key_id, {"status": "error", "error": error}, log)
             continue
         status = status_resp.get("status") if isinstance(status_resp, dict) else None
         if not isinstance(status, str):

@@ -45,11 +45,13 @@ class FakeBroker:
         lease_error: Exception | None = None,
         cert_error: Exception | None = None,
         status_response: dict | None = None,
+        status_error: Exception | None = None,
     ) -> None:
         self._status = status
         self._lease_error = lease_error
         self._cert_error = cert_error
         self._status_response = status_response
+        self._status_error = status_error
         self.calls = 0
         self.fetched_lease = 0
         self.fetched_cert = 0
@@ -69,6 +71,8 @@ class FakeBroker:
                 raise self._cert_error
             return {"status": "issued", "certificate": FAKE_CERT}
         if method == "GET":
+            if self._status_error is not None:
+                raise self._status_error
             return self._status_response if self._status_response is not None else {"status": self._status}
         raise AssertionError(f"unexpected {method} {path}")
 
@@ -279,6 +283,53 @@ def test_unavailable_status_poll_preserves_the_request(config: WorkerConfig) -> 
     process_pending_once(broker, config, now=NOW, ssh_runner=ssh)
     assert not (config.state_dir / "results" / "req-1.json").exists()
     assert input_file.exists()
+    assert ssh.calls == []
+
+
+@pytest.mark.parametrize("status", [401, 403, 404, 409, 500])
+def test_final_status_poll_refusal_is_terminal(config, status, caplog) -> None:
+    input_file = _write_input(config)
+    broker = FakeBroker("approved", status_error=BrokerHTTPError(status, "untrusted response detail"))
+    ssh = ScriptedSsh([])
+    with caplog.at_level(logging.WARNING, logger="privilege_broker.pve.worker"):
+        process_pending_once(broker, config, now=NOW, ssh_runner=ssh)
+    result = _result(config)
+    assert result == {"status": "error", "error": f"broker status HTTP {status}"}
+    assert not input_file.exists()
+    assert not _key_and_cert_exist(config)
+    assert ssh.calls == []
+    assert broker.fetched_lease == 0 and broker.fetched_cert == 0
+    assert "untrusted response detail" not in caplog.text
+    # A second poll must not retry a final refusal.
+    process_pending_once(broker, config, now=NOW + 1, ssh_runner=ssh)
+    assert broker.calls == 1
+
+
+@pytest.mark.parametrize("error", [RuntimeError("untrusted body"), OSError("untrusted stream detail")])
+def test_unusable_status_reply_is_terminal(config, error, caplog) -> None:
+    _write_input(config)
+    broker = FakeBroker("approved", status_error=error)
+    ssh = ScriptedSsh([])
+    with caplog.at_level(logging.WARNING, logger="privilege_broker.pve.worker"):
+        process_pending_once(broker, config, now=NOW, ssh_runner=ssh)
+    assert _result(config) == {"status": "error", "error": "broker status response unusable"}
+    assert not _key_and_cert_exist(config)
+    assert ssh.calls == []
+    assert str(error) not in caplog.text
+
+
+def test_transient_status_retries_remain_bounded_by_expiry(config) -> None:
+    input_file = _write_input(config)
+    broker = UnavailableBroker()
+    ssh = ScriptedSsh([])
+    process_pending_once(broker, config, now=NOW, ssh_runner=ssh)
+    process_pending_once(broker, config, now=NOW + 1, ssh_runner=ssh)
+    assert input_file.exists() and _key_and_cert_exist(config)
+    assert broker.calls == 2
+    process_pending_once(broker, config, now=NOW + 361, ssh_runner=ssh)
+    assert _result(config) == {"status": "expired"}
+    assert not _key_and_cert_exist(config)
+    assert broker.calls == 2
     assert ssh.calls == []
 
 

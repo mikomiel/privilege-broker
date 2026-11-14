@@ -37,6 +37,13 @@ fixed non-interactive SSH options. Terminal results are `succeeded`, `failed`,
 and `expired`. Key and certificate material never appears in results or logs,
 and a consumed certificate is never re-requested.
 
+The client rejects redirects instead of carrying its mTLS context outside the
+configured endpoint. The bridge publishes complete pending files atomically
+and cleans up files created by a failed attempt. The worker retries classified
+broker-availability failures, but makes final status refusals terminal.
+[Configuration](configuration.md#agent-bridge-and-worker) owns the detailed
+transport, publication and cleanup limits.
+
 ## Compatibility and extraction adaptations
 
 The wire versions remain `pve-operate-v1`, `pve-approval-v1` and

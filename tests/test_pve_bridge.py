@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import io
 import json
+import os
 import stat
+import uuid
 from pathlib import Path
 
 import pytest
 
+from privilege_broker.pve import bridge as bridge_module
 from privilege_broker.pve.bridge import ApprovalBridge, BridgeConfig
 from privilege_broker.pve.client import BrokerHTTPError, BrokerUnavailable
 
@@ -215,3 +219,125 @@ def test_read_status_unknown_for_missing_request(bridge: ApprovalBridge) -> None
 def test_read_status_rejects_non_canonical_ids(bridge: ApprovalBridge, request_id: str) -> None:
     with pytest.raises(ValueError, match="UUID"):
         bridge.read_status(request_id)
+
+
+def test_input_directory_failure_removes_the_private_key(bridge, config) -> None:
+    input_path = config.state_dir / "input"
+    input_path.write_text("existing file", encoding="utf-8")
+    broker = FakeBroker()
+    with pytest.raises(OSError):
+        bridge.request_mutation("ct.reboot", 9001, "reason", broker)
+    assert len(broker.calls) == 1
+    assert _key_files(config) == []
+    assert input_path.read_text(encoding="utf-8") == "existing file"
+
+
+def test_private_key_has_mode_600_from_creation(bridge, config, monkeypatch) -> None:
+    real_open = os.open
+    creation_modes = []
+
+    def observe_open(path, flags, mode=0o777, **kwargs):
+        fd = real_open(path, flags, mode, **kwargs)
+        if Path(path).suffix == ".key":
+            creation_modes.append(stat.S_IMODE(os.fstat(fd).st_mode))
+        return fd
+
+    monkeypatch.setattr(os, "open", observe_open)
+    old_umask = os.umask(0)
+    try:
+        bridge.request_mutation("ct.reboot", 9001, "reason", FakeBroker())
+    finally:
+        os.umask(old_umask)
+    assert creation_modes == [0o600]
+    assert stat.S_IMODE(_key_files(config)[0].stat().st_mode) == 0o600
+
+
+def test_partial_private_key_write_is_cleaned_up(bridge, config, monkeypatch) -> None:
+    real_open = io.open
+
+    class BrokenWriter:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return self.stream.__exit__(*args)
+
+        def write(self, data):
+            self.stream.write(data[:8])
+            self.stream.flush()
+            raise OSError("synthetic key write failure")
+
+    def broken_open(file, mode="r", *args, **kwargs):
+        stream = real_open(file, mode, *args, **kwargs)
+        return BrokenWriter(stream) if mode == "wb" else stream
+
+    monkeypatch.setattr(io, "open", broken_open)
+    broker = FakeBroker()
+    with pytest.raises(OSError, match="synthetic key write failure"):
+        bridge.request_mutation("ct.reboot", 9001, "reason", broker)
+    assert broker.calls == []
+    assert _key_files(config) == []
+    assert _input_files(config) == []
+
+
+def test_pending_json_is_not_visible_until_complete(bridge, config, monkeypatch) -> None:
+    real_dump = json.dump
+    observed = []
+    final_path = config.state_dir / "input" / f"{VALID_ID}.json"
+
+    def observe_dump(data, stream, **kwargs):
+        assert not final_path.exists()
+        stream.write("partial")
+        stream.flush()
+        assert not final_path.exists()
+        observed.append(stat.S_IMODE(os.fstat(stream.fileno()).st_mode))
+        stream.seek(0)
+        stream.truncate()
+        return real_dump(data, stream, **kwargs)
+
+    monkeypatch.setattr(json, "dump", observe_dump)
+    bridge.request_mutation("ct.reboot", 9001, "reason", FakeBroker())
+    assert observed == [0o600]
+    assert json.loads(final_path.read_text(encoding="utf-8"))["request_id"] == VALID_ID
+    assert _input_files(config) == [final_path]
+
+
+def test_partial_pending_json_and_key_are_removed(bridge, config, monkeypatch) -> None:
+    def broken_dump(data, stream, **kwargs):
+        stream.write("partial")
+        stream.flush()
+        raise OSError("synthetic pending write failure")
+
+    monkeypatch.setattr(json, "dump", broken_dump)
+    with pytest.raises(OSError, match="synthetic pending write failure"):
+        bridge.request_mutation("ct.reboot", 9001, "reason", FakeBroker())
+    assert _key_files(config) == []
+    assert _input_files(config) == []
+
+
+def test_pending_publication_failure_removes_temp_file_and_key(bridge, config, monkeypatch) -> None:
+    def fail_replace(*args, **kwargs):
+        raise OSError("synthetic publication failure")
+
+    monkeypatch.setattr(os, "replace", fail_replace)
+    with pytest.raises(OSError, match="synthetic publication failure"):
+        bridge.request_mutation("ct.reboot", 9001, "reason", FakeBroker())
+    assert _key_files(config) == []
+    assert _input_files(config) == []
+
+
+def test_existing_key_is_not_overwritten_or_removed(bridge, config, monkeypatch) -> None:
+    fixed_id = uuid.UUID(VALID_ID)
+    monkeypatch.setattr(bridge_module.uuid, "uuid4", lambda: fixed_id)
+    keys = config.state_dir / "keys"
+    keys.mkdir()
+    existing = keys / f"{fixed_id.hex}.key"
+    existing.write_text("owned by another request", encoding="utf-8")
+    broker = FakeBroker()
+    with pytest.raises(FileExistsError):
+        bridge.request_mutation("ct.reboot", 9001, "reason", broker)
+    assert existing.read_text(encoding="utf-8") == "owned by another request"
+    assert broker.calls == []

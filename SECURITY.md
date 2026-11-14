@@ -36,5 +36,8 @@ No response-time or bounty commitment is made.
 The extracted service verifies passkey ceremonies and binds authorization to
 frontend-authenticated identity. The TLS frontend, private keys and isolation
 remain deployer responsibilities. The service can sign a restricted SSH
-certificate, but it has no PVE transport, execution worker or typed dispatcher.
-Approval and certificate issuance are not evidence that an operation ran.
+certificate. The package includes the agent-side bridge, mTLS client and
+worker, but not the target dispatcher or its durable replay store. The client
+rejects redirects; deployers must supply the broker endpoint, trust material
+and protected worker state. Approval and certificate issuance are not
+evidence that an operation ran.
