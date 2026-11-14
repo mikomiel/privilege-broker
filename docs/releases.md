@@ -7,8 +7,11 @@ bootstrap marker, not a supported release.
 
 Release-please is the single owner of version and changelog updates. It uses
 `release-please-config.json` and `.release-please-manifest.json` to propose
-one release PR after release-relevant conventional commits. Ordinary feature
-PRs do not hand-edit the changelog or bump versions.
+one release PR after release-relevant conventional commits. That PR bumps
+`pyproject.toml`, the manifest and the project's own version in `uv.lock`;
+`checks` runs `uv lock --check`, so a release PR that skipped the lock fails
+instead of leaving `main` stale. Ordinary feature PRs do not hand-edit the
+changelog or bump versions.
 
 The workflow references the repository Actions secret
 `RELEASE_PLEASE_TOKEN`. The maintainer provisions it with repository-scoped

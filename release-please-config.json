@@ -6,6 +6,13 @@
   "packages": {
     ".": {
       "package-name": "privilege-broker",
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "uv.lock",
+          "jsonpath": "$.package[?(@.name.value=='privilege-broker')].version"
+        }
+      ],
       "changelog-sections": [
         {
           "type": "feat",
