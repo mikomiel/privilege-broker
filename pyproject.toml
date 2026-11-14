@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "privilege-broker"
-version = "0.0.0"
+version = "0.1.0"
 description = "Human-approved typed operations for AI agents, with Proxmox VE as the first integration."
 requires-python = ">=3.11"
 license = "AGPL-3.0-only"
