@@ -133,10 +133,14 @@ proxies disabled. It rejects every redirect, including same-origin redirects,
 rather than forwarding the mTLS context or accepting a downgrade to HTTP.
 HTTP error bodies are read only up to the detail limit and closed, including
 when a body read fails; producing an error message does not drain the response.
-Interrupted response framing is a transient availability failure. If an HTTP
+Interrupted response framing is a transient availability failure. For fixed
+lengths, the client checks `Content-Length` against the body actually read;
+chunked framing remains the transport's responsibility. Invalid lengths and
+declared bodies above the size bound are final unusable responses. If an HTTP
 error status is already known, that status keeps its retry/final classification
-even when the detail stream is truncated. Other HTTP protocol errors are final
-unusable responses, not unhandled exceptions that stop the worker.
+even when the detail stream is truncated. Other HTTP protocol errors and JSON
+decoder failures, including integer-conversion limits, become final unusable
+responses rather than unhandled exceptions that stop the worker.
 
 `bridge.request_mutation(action, ct_id, reason, client)` validates the typed
 action, target and reason. It creates an ephemeral Ed25519 key exclusively
@@ -151,6 +155,9 @@ created by that attempt. An existing key is neither overwritten nor removed.
 Cleanup covers failures that return through Python; process termination or a
 filesystem that refuses deletion can leave files. No orphan-recovery sweeper
 is implemented. Deployers own state-directory protection and recovery.
+
+`known_hosts_path` is the exclusive SSH host-key trust file; the fixed SSH
+options disable global known-host files as well as SSH configuration files.
 
 Run exactly one poller per state directory, including calls to
 `process_pending_once`. No singleton lock or multi-poller coordination is

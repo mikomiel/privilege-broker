@@ -12,6 +12,7 @@ import json
 import logging
 import ssl
 import subprocess
+import sys
 from pathlib import Path
 from subprocess import CompletedProcess
 
@@ -201,6 +202,7 @@ def test_approved_request_dispatches_and_succeeds(config: WorkerConfig) -> None:
         "RequestTTY=no",
         "ConnectTimeout=10",
         "StrictHostKeyChecking=yes",
+        "GlobalKnownHostsFile=/dev/null",
     )
     for option in fixed_options:
         assert option in argv
@@ -535,7 +537,8 @@ def test_result_publication_failure_keeps_input_and_key(config, monkeypatch) -> 
     assert list((config.state_dir / "results").iterdir()) == []
 
 
-def test_truncated_status_does_not_stop_processing_other_requests(config) -> None:
+@pytest.mark.parametrize("failure", ["chunked", "content-length", "json-integer"])
+def test_unusable_status_does_not_stop_processing_other_requests(config, failure) -> None:
     first = _write_input(config, "req-1")
     second = _write_input(config, "req-2")
     second_data = json.loads(second.read_text(encoding="utf-8"))
@@ -545,8 +548,13 @@ def test_truncated_status_does_not_stop_processing_other_requests(config) -> Non
     key2.write_text(FAKE_KEY_CONTENT, encoding="utf-8")
     key2.chmod(0o600)
     payload = b'{"status":"pending"}'
+    first_frames = {
+        "chunked": b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n40\r\n" + payload,
+        "content-length": b'HTTP/1.1 200 OK\r\nContent-Length: 30\r\n\r\n{"status":',
+        "json-integer": b"HTTP/1.1 200 OK\r\nContent-Length: 5000\r\n\r\n" + b"9" * 5000,
+    }
     streams = [
-        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n40\r\n" + payload,
+        first_frames[failure],
         f"HTTP/1.1 200 OK\r\nContent-Length: {len(payload)}\r\n\r\n".encode("ascii") + payload,
     ]
     requested = []
@@ -571,12 +579,21 @@ def test_truncated_status_does_not_stop_processing_other_requests(config) -> Non
         opener=Opener(),
     )
     ssh = ScriptedSsh([])
-    process_pending_once(client, config, now=NOW, ssh_runner=ssh)
+    original_limit = sys.get_int_max_str_digits()
+    try:
+        sys.set_int_max_str_digits(4300)
+        process_pending_once(client, config, now=NOW, ssh_runner=ssh)
+    finally:
+        sys.set_int_max_str_digits(original_limit)
     assert requested == [
         "https://broker.example.test/v1/broker/requests/req-1",
         "https://broker.example.test/v1/broker/requests/req-2",
     ]
-    assert first.exists() and second.exists()
-    assert _key_and_cert_exist(config) and key2.exists()
+    assert second.exists() and key2.exists()
+    if failure == "json-integer":
+        assert not first.exists() and not _key_and_cert_exist(config)
+        assert _result(config, "req-1") == {"status": "error", "error": "broker status response unusable"}
+    else:
+        assert first.exists() and _key_and_cert_exist(config)
+        assert not (config.state_dir / "results").exists()
     assert ssh.calls == []
-    assert not (config.state_dir / "results").exists()

@@ -196,6 +196,8 @@ def dispatch(
             "-o",
             f"UserKnownHostsFile={config.known_hosts_path}",
             "-o",
+            "GlobalKnownHostsFile=/dev/null",
+            "-o",
             "StrictHostKeyChecking=yes",
             "-p",
             str(config.ssh_port),

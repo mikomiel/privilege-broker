@@ -6,6 +6,7 @@ import http.client
 import io
 import json
 import ssl
+import sys
 import urllib.error
 import urllib.request
 import urllib.response
@@ -27,6 +28,7 @@ CONFIG = BrokerClientConfig(
 class _FakeResponse:
     def __init__(self, body: bytes) -> None:
         self._body = body
+        self.headers = Message()
 
     def __enter__(self) -> _FakeResponse:
         return self
@@ -137,7 +139,7 @@ def test_non_object_json_response_becomes_empty_dict() -> None:
 
 def test_invalid_json_body_is_a_refusal() -> None:
     opener = _FakeOpener([_FakeResponse(b"not json at all")])
-    with pytest.raises(RuntimeError, match="non-JSON"):
+    with pytest.raises(RuntimeError, match="unusable JSON"):
         _client(opener).request("GET", "/x")
 
 
@@ -247,12 +249,7 @@ def test_error_response_is_closed_when_its_body_read_fails() -> None:
     assert body.closed
 
 
-def _truncated_chunked_response(status):
-    raw = (
-        f"HTTP/1.1 {status} Synthetic\r\nTransfer-Encoding: chunked\r\n\r\n".encode("ascii")
-        + b'40\r\n{"status":"pending"}'
-    )
-
+def _http_response(raw):
     class Socket:
         def makefile(self, *args):
             return io.BytesIO(raw)
@@ -260,6 +257,13 @@ def _truncated_chunked_response(status):
     response = http.client.HTTPResponse(Socket())
     response.begin()
     return response
+
+
+def _truncated_chunked_response(status):
+    return _http_response(
+        f"HTTP/1.1 {status} Synthetic\r\nTransfer-Encoding: chunked\r\n\r\n".encode("ascii")
+        + b'40\r\n{"status":"pending"}'
+    )
 
 
 def test_truncated_chunked_success_is_transient_and_closed() -> None:
@@ -284,3 +288,57 @@ def test_other_http_protocol_errors_are_final(error) -> None:
     with pytest.raises(RuntimeError, match="broker HTTP response is unusable") as excinfo:
         _client(_FakeOpener([error])).request("GET", "/x")
     assert not isinstance(excinfo.value, BrokerUnavailable)
+
+
+@pytest.mark.parametrize("transfer_encoding", [b"", b"Transfer-Encoding: identity\r\n"], ids=["plain", "identity"])
+def test_truncated_content_length_response_is_transient_and_closed(transfer_encoding) -> None:
+    response = _http_response(b"HTTP/1.1 200 OK\r\n" + transfer_encoding + b'Content-Length: 30\r\n\r\n{"status":')
+    with pytest.raises(BrokerUnavailable, match="incomplete response body"):
+        _client(_FakeOpener([response])).request("GET", "/x")
+    assert response.isclosed()
+
+
+def test_declared_oversize_is_rejected_before_body_read(monkeypatch) -> None:
+    response = _http_response(b"HTTP/1.1 200 OK\r\nContent-Length: 2097152\r\n\r\n")
+
+    def no_read(*args):
+        raise AssertionError("declared oversize body must not be read")
+
+    monkeypatch.setattr(response, "read", no_read)
+    with pytest.raises(RuntimeError, match="response too large"):
+        _client(_FakeOpener([response])).request("GET", "/x")
+    assert response.isclosed()
+
+
+@pytest.mark.parametrize("length", ["invalid", "-1", "9" * 5000], ids=["non-number", "negative", "too-many-digits"])
+def test_invalid_content_length_is_final(length) -> None:
+    response = _http_response(f"HTTP/1.1 200 OK\r\nContent-Length: {length}\r\n\r\n{{}}".encode("ascii"))
+    with pytest.raises(RuntimeError, match=r"response (length is invalid|too large)") as excinfo:
+        _client(_FakeOpener([response])).request("GET", "/x")
+    assert not isinstance(excinfo.value, BrokerUnavailable)
+    assert response.isclosed()
+
+
+def test_json_integer_limit_is_a_classified_unusable_body() -> None:
+    response = _http_response(b"HTTP/1.1 200 OK\r\nContent-Length: 5000\r\n\r\n" + b"9" * 5000)
+    original_limit = sys.get_int_max_str_digits()
+    try:
+        sys.set_int_max_str_digits(4300)
+        with pytest.raises(RuntimeError, match="unusable JSON") as excinfo:
+            _client(_FakeOpener([response])).request("GET", "/x")
+        assert not isinstance(excinfo.value, BrokerUnavailable)
+    finally:
+        sys.set_int_max_str_digits(original_limit)
+    assert response.isclosed()
+
+
+def test_chunked_framing_takes_precedence_over_content_length() -> None:
+    payload = b'{"status":"pending"}'
+    response = _http_response(
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 2097152\r\n\r\n"
+        + f"{len(payload):x}\r\n".encode("ascii")
+        + payload
+        + b"\r\n0\r\n\r\n"
+    )
+    assert _client(_FakeOpener([response])).request("GET", "/x") == {"status": "pending"}
+    assert response.isclosed()

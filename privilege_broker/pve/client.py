@@ -130,7 +130,23 @@ class BrokerClient:
         )
         try:
             with self._opener.open(request, timeout=self._config.timeout) as response:
+                expected_length = None
+                declared_length = response.headers.get("Content-Length")
+                # Match the transport's chunked framing decision. A bounded
+                # read alone does not detect EOF in a fixed-length response.
+                chunked = response.headers.get("Transfer-Encoding", "").lower() == "chunked"
+                if declared_length is not None and not chunked:
+                    try:
+                        expected_length = int(declared_length)
+                    except ValueError as exc:
+                        raise RuntimeError("broker response length is invalid") from exc
+                    if expected_length < 0:
+                        raise RuntimeError("broker response length is invalid")
+                    if expected_length > _MAX_BODY_BYTES:
+                        raise RuntimeError("broker response too large")
                 raw = response.read(_MAX_BODY_BYTES + 1)
+                if expected_length is not None and len(raw) < expected_length:
+                    raise BrokerUnavailable("broker unavailable: incomplete response body")
         except urllib.error.HTTPError as exc:
             try:
                 detail = exc.read(_DETAIL_LIMIT + 1).decode("utf-8", errors="replace")
@@ -152,7 +168,9 @@ class BrokerClient:
             raise RuntimeError("broker response too large")
         try:
             result = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise RuntimeError("broker returned a non-JSON body") from exc
+        except ValueError as exc:
+            # Includes UTF-8/JSON syntax failures and decoder limits such as
+            # Python's integer-conversion guard, not just JSONDecodeError.
+            raise RuntimeError("broker returned unusable JSON") from exc
         # A body that is not a JSON object carries no usable answer.
         return result if isinstance(result, dict) else {}
