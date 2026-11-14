@@ -46,6 +46,7 @@ import os
 import re
 import selectors
 import sqlite3
+import stat
 import subprocess
 import sys
 import threading
@@ -225,7 +226,8 @@ def parse_request(text: str) -> DispatchRequest:
     """Parse the dispatcher's stdin document, failing closed on any oddity."""
     try:
         data = json.loads(text)
-    except ValueError as exc:
+    except (ValueError, RecursionError) as exc:
+        # RecursionError: deeply nested JSON within the byte bound.
         raise ValueError("request is not valid JSON") from exc
     if not isinstance(data, dict):
         raise ValueError("request must be a JSON object")
@@ -611,6 +613,14 @@ def read_request(source: Any, *, limit: int = MAX_REQUEST_BYTES, timeout: float 
     try:
         descriptor = source.fileno()
     except (AttributeError, OSError):
+        document = source.read(limit + 1)
+        if len(document) > limit:
+            raise ValueError("request is too large") from None
+        return document
+
+    if stat.S_ISREG(os.fstat(descriptor).st_mode):
+        # A regular file cannot be registered with epoll; its size is fixed, so
+        # one bounded read needs no deadline.
         document = source.read(limit + 1)
         if len(document) > limit:
             raise ValueError("request is too large") from None

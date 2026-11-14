@@ -626,6 +626,66 @@ def test_oversized_request_is_refused_without_running(config, private_key) -> No
     assert not config.claim_db_path.exists()
 
 
+def test_file_redirected_stdin_dispatches(config, private_key, tmp_path) -> None:
+    request_file = tmp_path / "request.json"
+    request_file.write_text(_request_json(private_key), encoding="utf-8")
+    runner = Runner([CompletedProcess([], 0, "ok", "")])
+    out = io.StringIO()
+    with request_file.open(encoding="utf-8") as source:
+        exit_code = main(
+            [
+                "--policy",
+                str(config.policy_path),
+                "--lease-public-key",
+                str(config.lease_public_key_path),
+                "--claim-db",
+                str(config.claim_db_path),
+                "--lxc-conf-dir",
+                str(config.lxc_conf_dir),
+            ],
+            stdin=source,
+            stdout=out,
+            runner=runner,
+            clock=lambda: NOW,
+        )
+    assert exit_code == 0
+    assert json.loads(out.getvalue())["stdout"] == "ok"
+    assert runner.calls[0][0] == ["/usr/bin/sudo", "/usr/sbin/pct", "start", "9001"]
+
+
+def test_deeply_nested_request_is_refused(config, private_key) -> None:
+    # Beyond Python's recursion limit the decoder raises RecursionError, which
+    # parse_request normalises to the fixed invalid-JSON refusal.
+    deepest = "[" * 200000 + "0" + "]" * 200000
+    with pytest.raises(ValueError, match="not valid JSON"):
+        parse_request(deepest)
+    # Within the 64 KiB stdin bound the decoder succeeds, so the object-shape
+    # check still refuses it without reaching a claim or the runner.
+    nested = "[" * 2000 + "0" + "]" * 2000
+    runner = Runner([])
+    out = io.StringIO()
+    exit_code = main(
+        [
+            "--policy",
+            str(config.policy_path),
+            "--lease-public-key",
+            str(config.lease_public_key_path),
+            "--claim-db",
+            str(config.claim_db_path),
+            "--lxc-conf-dir",
+            str(config.lxc_conf_dir),
+        ],
+        stdin=io.StringIO(nested),
+        stdout=out,
+        runner=runner,
+        clock=lambda: NOW,
+    )
+    assert exit_code == 1
+    assert json.loads(out.getvalue()) == {"error": "request must be a JSON object", "exit_code": 1}
+    assert runner.calls == []
+    assert not config.claim_db_path.exists()
+
+
 def test_stalled_request_read_times_out() -> None:
     read_end, write_end = os.pipe()
     try:
