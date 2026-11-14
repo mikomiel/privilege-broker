@@ -350,25 +350,30 @@ class ClaimStore:
             finally:
                 os.umask(old_umask)
         self._connection.row_factory = sqlite3.Row
-        self._connection.executescript(
-            """
-            PRAGMA journal_mode=WAL;
-            -- FULL fsyncs every commit, so a claim is durable before the
-            -- operation starts. NORMAL can lose an acknowledged claim.
-            PRAGMA synchronous=FULL;
-            CREATE TABLE IF NOT EXISTS dispatch_claims (
-              lease_id TEXT PRIMARY KEY,
-              action TEXT NOT NULL,
-              ct_id INTEGER NOT NULL,
-              state TEXT NOT NULL DEFAULT 'CLAIMED',
-              exit_code INTEGER,
-              stdout TEXT,
-              stderr TEXT,
-              created_at INTEGER NOT NULL,
-              completed_at INTEGER
-            );
-            """
-        )
+        try:
+            self._connection.executescript(
+                """
+                PRAGMA journal_mode=WAL;
+                -- FULL fsyncs every commit, so a claim is durable before the
+                -- operation starts. NORMAL can lose an acknowledged claim.
+                PRAGMA synchronous=FULL;
+                CREATE TABLE IF NOT EXISTS dispatch_claims (
+                  lease_id TEXT PRIMARY KEY,
+                  action TEXT NOT NULL,
+                  ct_id INTEGER NOT NULL,
+                  state TEXT NOT NULL DEFAULT 'CLAIMED',
+                  exit_code INTEGER,
+                  stdout TEXT,
+                  stderr TEXT,
+                  created_at INTEGER NOT NULL,
+                  completed_at INTEGER
+                );
+                """
+            )
+        except BaseException:
+            # Never leak a half-initialized connection or WAL handle.
+            self._connection.close()
+            raise
         try:
             db_path.chmod(0o600)
         except OSError:
@@ -512,7 +517,15 @@ def dispatch(
         return _refusal(str(exc))
 
     owns_store = store is None
-    claim_store = store or ClaimStore(config.claim_db_path)
+    if store is not None:
+        claim_store = store
+    else:
+        try:
+            claim_store = ClaimStore(config.claim_db_path)
+        except (sqlite3.Error, OSError):
+            # Directory creation, connect, WAL setup or schema creation failed.
+            # Nothing executed, so the request is refused, not retried here.
+            return _refusal("claim store is unavailable; nothing was executed")
 
     def record(state: str, exit_code: int | None, stdout: str, stderr: str) -> bool:
         try:

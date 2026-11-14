@@ -382,10 +382,11 @@ def test_claim_is_committed_before_the_command_runs(config, private_key) -> None
 
 
 def test_separate_claim_databases_do_not_share_claims(config, private_key, tmp_path) -> None:
-    """Documents the documented deployment requirement, not a happy path.
+    """Documents the deployment requirement, not a happy path.
 
     Each node keeps local state, so the same lease can run once per database.
-    Multi-node deployments must share one database or keep one eligible executor.
+    The supported model is exactly one eligible executor per target; the WAL
+    database is never shared across hosts.
     """
     other = DispatchConfig(
         policy_path=config.policy_path,
@@ -519,25 +520,65 @@ def test_claim_store_failure_before_execution_refuses_without_running(config, pr
 
 
 def test_result_persistence_failure_reports_uncertainty_without_reexecution(config, private_key) -> None:
-    store = _BrokenStore(fail_complete=True)
+    class FailingComplete(ClaimStore):
+        def complete(self, *args: object, **kwargs: object) -> None:
+            raise sqlite3.OperationalError("database or disk is full")
+
     runner = Runner([CompletedProcess([], 0, "done", "")])
-    exit_code, output = dispatch(
-        parse_request(_request_json(private_key)),
-        config,
-        public_key=private_key.public_key(),
-        now=NOW,
-        store=store,
-        runner=runner,
-    )
+    with FailingComplete(config.claim_db_path) as store:
+        exit_code, output = dispatch(
+            parse_request(_request_json(private_key)),
+            config,
+            public_key=private_key.public_key(),
+            now=NOW,
+            store=store,
+            runner=runner,
+        )
     assert exit_code == 1
     assert output == {
         "error": "operation ran but its result could not be recorded; outcome unknown",
         "exit_code": 1,
     }
-    assert store.states == ["SUCCEEDED"]
     assert len(runner.calls) == 1
-    # The claim was never released, so a later presentation cannot execute again.
-    assert store.complete_calls == 1
+
+    # The durable row is still CLAIMED, so a later presentation cannot execute.
+    with ClaimStore(config.claim_db_path) as store:
+        stored = store.get(LEASE_ID)
+    assert stored is not None and stored["state"] == "CLAIMED"
+    replay = Runner([])
+    replay_code, replay_output = _run(config, private_key, _request_json(private_key), replay, now=NOW + 1)
+    assert replay_code == 1
+    assert "unknown" in replay_output["error"]
+    assert replay.calls == []
+
+
+def test_unusable_claim_store_is_refused_without_running(config, private_key) -> None:
+    config.claim_db_path.parent.mkdir(parents=True, exist_ok=True)
+    config.claim_db_path.write_bytes(b"not a sqlite database")
+    runner = Runner([])
+    out = io.StringIO()
+    exit_code = main(
+        [
+            "--policy",
+            str(config.policy_path),
+            "--lease-public-key",
+            str(config.lease_public_key_path),
+            "--claim-db",
+            str(config.claim_db_path),
+            "--lxc-conf-dir",
+            str(config.lxc_conf_dir),
+        ],
+        stdin=io.StringIO(_request_json(private_key)),
+        stdout=out,
+        runner=runner,
+        clock=lambda: NOW,
+    )
+    assert exit_code == 1
+    assert json.loads(out.getvalue()) == {
+        "error": "claim store is unavailable; nothing was executed",
+        "exit_code": 1,
+    }
+    assert runner.calls == []
 
 
 def test_verify_lease_returns_claims(private_key) -> None:
