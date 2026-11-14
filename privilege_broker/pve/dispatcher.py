@@ -44,6 +44,7 @@ import argparse
 import json
 import os
 import re
+import selectors
 import sqlite3
 import subprocess
 import sys
@@ -85,6 +86,10 @@ NOT_ON_THIS_NODE_EXIT = 3
 PRUNE_ACTION = "ct.snapshot_prune"
 #: Byte limit for one stored output stream.
 _OUTPUT_LIMIT = 4096
+#: Largest request document the dispatcher reads from stdin.
+MAX_REQUEST_BYTES = 64 * 1024
+#: Longest time the dispatcher waits for that request.
+REQUEST_READ_TIMEOUT = 10.0
 
 _HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 _LEASE_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
@@ -570,6 +575,11 @@ def dispatch(
         except OSError:
             record("FAILED", 1, "", "spawn failed")
             return _refusal("operation could not be started")
+        except UnicodeDecodeError:
+            # Decoding can fail after the command ran; the outcome is unknown and
+            # the claim stays UNKNOWN, so the lease is never executed again.
+            record("UNKNOWN", None, "", "undecodable output")
+            return _refusal("command output could not be decoded; outcome unknown")
 
         exit_code = int(result.returncode)
         stored_state = "SUCCEEDED" if exit_code == 0 else "FAILED"
@@ -589,6 +599,46 @@ def dispatch(
     finally:
         if owns_store:
             claim_store.close()
+
+
+def read_request(source: Any, *, limit: int = MAX_REQUEST_BYTES, timeout: float = REQUEST_READ_TIMEOUT) -> str:
+    """Read at most *limit* request bytes, within *timeout* seconds.
+
+    A pipe is read through a selector so a caller that never closes stdin or
+    streams forever cannot hold the dispatcher open or grow its memory. Text
+    sources without a file descriptor are read with the same byte bound.
+    """
+    try:
+        descriptor = source.fileno()
+    except (AttributeError, OSError):
+        document = source.read(limit + 1)
+        if len(document) > limit:
+            raise ValueError("request is too large") from None
+        return document
+
+    chunks: list[bytes] = []
+    total = 0
+    deadline = time.monotonic() + timeout
+    os.set_blocking(descriptor, False)
+    with selectors.DefaultSelector() as selector:
+        selector.register(descriptor, selectors.EVENT_READ)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ValueError("request read timed out") from None
+            if not selector.select(remaining):
+                raise ValueError("request read timed out") from None
+            try:
+                chunk = os.read(descriptor, min(8192, limit + 1 - total))
+            except BlockingIOError:
+                continue
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > limit:
+                raise ValueError("request is too large") from None
+            chunks.append(chunk)
+    return b"".join(chunks).decode("utf-8", errors="replace")
 
 
 def main(
@@ -622,7 +672,7 @@ def main(
         command_timeout=arguments.command_timeout,
     )
     try:
-        request = parse_request(source.read())
+        request = parse_request(read_request(source))
         public_key = load_lease_public_key(config.lease_public_key_path)
     except ValueError as exc:
         exit_code, output = _refusal(str(exc))

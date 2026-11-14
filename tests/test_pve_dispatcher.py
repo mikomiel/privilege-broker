@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import os
 import sqlite3
 import threading
 from pathlib import Path
@@ -22,6 +23,7 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from privilege_broker.pve.common import canonical_json, execution_arguments_digest
 from privilege_broker.pve.dispatcher import (
     AUDIENCE,
+    MAX_REQUEST_BYTES,
     NOT_ON_THIS_NODE_EXIT,
     CapabilityLease,
     ClaimStore,
@@ -29,6 +31,7 @@ from privilege_broker.pve.dispatcher import (
     dispatch,
     main,
     parse_request,
+    read_request,
     verify_lease,
 )
 
@@ -579,6 +582,58 @@ def test_unusable_claim_store_is_refused_without_running(config, private_key) ->
         "exit_code": 1,
     }
     assert runner.calls == []
+
+
+def test_undecodable_output_is_unknown_and_never_reexecuted(config, private_key) -> None:
+    def bad_output(argv, **kwargs):
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    text = _request_json(private_key)
+    exit_code, output = _run(config, private_key, text, bad_output)
+    assert exit_code == 1
+    assert output == {"error": "command output could not be decoded; outcome unknown", "exit_code": 1}
+    with ClaimStore(config.claim_db_path) as store:
+        stored = store.get(LEASE_ID)
+    assert stored is not None and stored["state"] == "UNKNOWN"
+    replay = Runner([])
+    assert _run(config, private_key, text, replay, now=NOW + 1)[0] == 1
+    assert replay.calls == []
+
+
+def test_oversized_request_is_refused_without_running(config, private_key) -> None:
+    oversized = "x" * (MAX_REQUEST_BYTES + 1)
+    runner = Runner([])
+    out = io.StringIO()
+    exit_code = main(
+        [
+            "--policy",
+            str(config.policy_path),
+            "--lease-public-key",
+            str(config.lease_public_key_path),
+            "--claim-db",
+            str(config.claim_db_path),
+            "--lxc-conf-dir",
+            str(config.lxc_conf_dir),
+        ],
+        stdin=io.StringIO(oversized),
+        stdout=out,
+        runner=runner,
+        clock=lambda: NOW,
+    )
+    assert exit_code == 1
+    assert json.loads(out.getvalue()) == {"error": "request is too large", "exit_code": 1}
+    assert runner.calls == []
+    assert not config.claim_db_path.exists()
+
+
+def test_stalled_request_read_times_out() -> None:
+    read_end, write_end = os.pipe()
+    try:
+        with os.fdopen(read_end) as source:
+            with pytest.raises(ValueError, match="request read timed out"):
+                read_request(source, timeout=0.1)
+    finally:
+        os.close(write_end)
 
 
 def test_verify_lease_returns_claims(private_key) -> None:
