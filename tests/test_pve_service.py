@@ -773,6 +773,159 @@ class TestSourceIsolation:
 
 
 # ===================================================================
+# Agent-facing status contract (OpenSpec task 3.3, issue #7)
+# ===================================================================
+
+
+class TestAgentStatusContract:
+    """The mTLS status view keeps approval and execution states distinct.
+
+    An approved request is authorized but not executed; the broker never
+    derives an execution outcome from approval, lease fetch or certificate
+    issuance, and cross-identity reads are refused without disclosure.
+    """
+
+    def _create(self, client: TestClient) -> str:
+        resp = client.post("/v1/broker/requests", json=_body())
+        assert resp.status_code == 201
+        return resp.json()["request_id"]
+
+    def _create_and_approve(self, client: TestClient) -> str:
+        request_id = self._create(client)
+        client.get(f"/v1/broker/requests/{request_id}/approval/options")
+        client.post(
+            f"/v1/broker/requests/{request_id}/approval",
+            json={"credential": {"id": "credential-1", "proof": "verified"}},
+        )
+        return request_id
+
+    def test_status_view_shape_and_contract_enums(self, client: TestClient) -> None:
+        request_id = self._create(client)
+        data = client.get(f"/v1/broker/requests/{request_id}").json()
+        assert set(data) == {
+            "request_id",
+            "action",
+            "ct_id",
+            "reason",
+            "status",
+            "execution_state",
+            "expires_at",
+            "ssh_fingerprint",
+            "digest",
+            "certificate_fetched",
+        }
+        assert data["status"] in svc.APPROVAL_STATES
+        assert data["execution_state"] == "not_executed"
+        assert data["execution_state"] in svc.EXECUTION_STATES
+
+    def test_contract_vocabularies_are_closed_and_disjoint(self) -> None:
+        # Approval states and execution states never overlap, so an approved
+        # request can never be relabelled as an execution outcome.
+        assert svc.APPROVAL_STATES == frozenset({"pending", "approved", "denied", "expired", "cancelled"})
+        assert svc.EXECUTION_STATES == frozenset({"not_executed", "executing", "succeeded", "failed", "uncertain"})
+        assert not svc.APPROVAL_STATES & svc.EXECUTION_STATES
+
+    def test_approved_is_authorized_but_not_executed(self, client: TestClient) -> None:
+        request_id = self._create_and_approve(client)
+
+        data = client.get(f"/v1/broker/requests/{request_id}").json()
+        assert data["status"] == "approved"
+        assert data["execution_state"] == "not_executed"
+        assert data["certificate_fetched"] is False
+
+        # The certificate gate is an authorization event, not execution.
+        cert_resp = client.post(
+            f"/v1/broker/requests/{request_id}/certificate",
+            json={"ssh_public_key": _VALID_PUB_KEY},
+        )
+        assert cert_resp.status_code == 200
+        after = client.get(f"/v1/broker/requests/{request_id}").json()
+        assert after["status"] == "approved"
+        assert after["execution_state"] == "not_executed"
+
+        payload = json.dumps(after)
+        assert "succeeded" not in payload
+        assert "completed" not in payload
+
+    def test_lifecycle_states_stay_distinguishable(self, client: TestClient, store: _BrokerStore) -> None:
+        pending_id = self._create(client)
+        approved_id = self._create_and_approve(client)
+
+        denied_id = self._create(client)
+        client.post(f"/v1/broker/requests/{denied_id}/denial")
+
+        cancelled_id = self._create(client)
+        assert client.post(f"/v1/broker/requests/{cancelled_id}/cancel").status_code == 200
+
+        expired_id = self._create(client)
+        # Reading past the deadline flips and persists the terminal state.
+        assert store.get_broker_request(expired_id, now=int(time.time()) + 10_000)["status"] == "expired"
+
+        seen = {}
+        for request_id in (pending_id, approved_id, denied_id, cancelled_id, expired_id):
+            data = client.get(f"/v1/broker/requests/{request_id}").json()
+            seen[data["status"]] = data["execution_state"]
+        assert seen == {
+            "pending": "not_executed",
+            "approved": "not_executed",
+            "denied": "not_executed",
+            "cancelled": "not_executed",
+            "expired": "not_executed",
+        }
+
+    def test_cross_identity_read_is_refused_without_disclosure(
+        self, store: _BrokerStore, signer: _LeaseSigner, client_factory
+    ) -> None:
+        ext1 = FixedIdentityExtractor(identity="agent-demo", source_ip="192.0.2.10")
+        app1 = svc.create_broker_app(
+            policy=_POLICY,
+            store=store,
+            signer=signer,
+            extractor=ext1,
+            rp_id="broker.example.test",
+            origin="https://broker.example.test",
+            verifier=FakeVerifier(),
+            registration_verifier=FakeRegistrationVerifier(),
+        )
+        request_id = client_factory(app1).post("/v1/broker/requests", json=_body()).json()["request_id"]
+
+        ext2 = FixedIdentityExtractor(identity="intruder", source_ip="198.51.100.99")
+        app2 = svc.create_broker_app(
+            policy=_POLICY,
+            store=store,
+            signer=signer,
+            extractor=ext2,
+            rp_id="broker.example.test",
+            origin="https://broker.example.test",
+            verifier=FakeVerifier(),
+            registration_verifier=FakeRegistrationVerifier(),
+        )
+        resp = client_factory(app2).get(f"/v1/broker/requests/{request_id}")
+        assert resp.status_code == 403
+        assert resp.json() == {"detail": "access denied"}
+
+    def test_status_view_fails_closed_on_unknown_state(self, client: TestClient, store: _BrokerStore) -> None:
+        request_id = self._create(client)
+        row = store.get_broker_request(request_id)
+        # A regression that relabelled approval as an execution outcome must
+        # be rejected, not passed through to the agent.
+        with pytest.raises(ValueError, match="unknown broker request state"):
+            svc._agent_status_view({**row, "status": "succeeded"})
+        with pytest.raises(ValueError, match="unknown broker request state"):
+            svc._agent_status_view({**row, "status": "completed"})
+
+    def test_status_view_never_claims_execution_even_with_certificate(
+        self, client: TestClient, store: _BrokerStore
+    ) -> None:
+        request_id = self._create_and_approve(client)
+        row = store.get_broker_request(request_id)
+        row["certificate_fetched"] = 1
+        view = svc._agent_status_view(row)
+        assert view["status"] == "approved"
+        assert view["execution_state"] == "not_executed"
+
+
+# ===================================================================
 # 10. Health endpoint
 # ===================================================================
 
