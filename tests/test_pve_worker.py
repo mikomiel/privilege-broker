@@ -6,15 +6,19 @@ touches a real host. State lives in a temporary directory.
 
 from __future__ import annotations
 
+import http.client
+import io
 import json
 import logging
+import ssl
 import subprocess
 from pathlib import Path
 from subprocess import CompletedProcess
 
 import pytest
 
-from privilege_broker.pve.client import BrokerHTTPError, BrokerUnavailable
+from privilege_broker.pve.bridge import ApprovalBridge, BridgeConfig
+from privilege_broker.pve.client import BrokerClient, BrokerClientConfig, BrokerHTTPError, BrokerUnavailable
 from privilege_broker.pve.worker import WorkerConfig, process_pending_once
 
 NOW = 1_800_000_000
@@ -476,3 +480,103 @@ def test_config_accepts_a_list_of_targets_and_string_state_dir(tmp_path: Path) -
     )
     assert config.targets == ("ops@node-a",)
     assert config.state_dir == tmp_path
+
+
+def test_terminal_result_is_atomic_for_status_readers(config, monkeypatch) -> None:
+    request_id = "123e4567-e89b-42d3-a456-426614174000"
+    _write_input(config, request_id)
+    bridge = ApprovalBridge(BridgeConfig(config.state_dir, "https://broker.example.test", "example-agent"))
+    real_open = io.open
+    observed = []
+
+    class ObservedWriter:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __getattr__(self, name):
+            return getattr(self.stream, name)
+
+        def __enter__(self):
+            self.stream.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.stream.__exit__(*args)
+
+        def write(self, data):
+            observed.append(bridge.read_status(request_id))
+            return self.stream.write(data)
+
+    def observe_open(file, mode="r", *args, **kwargs):
+        stream = real_open(file, mode, *args, **kwargs)
+        return ObservedWriter(stream) if mode == "w" else stream
+
+    monkeypatch.setattr(io, "open", observe_open)
+    process_pending_once(FakeBroker("denied"), config, now=NOW, ssh_runner=ScriptedSsh([]))
+    assert observed and all(row == {"status": "pending"} for row in observed)
+    assert bridge.read_status(request_id) == {"status": "denied"}
+    results = list((config.state_dir / "results").iterdir())
+    assert len(results) == 1 and results[0].name == f"{request_id}.json"
+    assert results[0].stat().st_mode & 0o777 == 0o600
+
+
+def test_result_publication_failure_keeps_input_and_key(config, monkeypatch) -> None:
+    input_file = _write_input(config)
+
+    def fail_dump(data, stream, **kwargs):
+        stream.write("partial")
+        raise OSError("synthetic result write failure")
+
+    monkeypatch.setattr(json, "dump", fail_dump)
+    with pytest.raises(OSError, match="synthetic result write failure"):
+        process_pending_once(FakeBroker("denied"), config, now=NOW, ssh_runner=ScriptedSsh([]))
+    assert input_file.exists()
+    assert _key_and_cert_exist(config)
+    assert list((config.state_dir / "results").iterdir()) == []
+
+
+def test_truncated_status_does_not_stop_processing_other_requests(config) -> None:
+    first = _write_input(config, "req-1")
+    second = _write_input(config, "req-2")
+    second_data = json.loads(second.read_text(encoding="utf-8"))
+    second_data["key_id"] = "key-2"
+    second.write_text(json.dumps(second_data), encoding="utf-8")
+    key2 = config.state_dir / "keys" / "key-2.key"
+    key2.write_text(FAKE_KEY_CONTENT, encoding="utf-8")
+    key2.chmod(0o600)
+    payload = b'{"status":"pending"}'
+    streams = [
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n40\r\n" + payload,
+        f"HTTP/1.1 200 OK\r\nContent-Length: {len(payload)}\r\n\r\n".encode("ascii") + payload,
+    ]
+    requested = []
+
+    class Socket:
+        def __init__(self, raw):
+            self.raw = raw
+
+        def makefile(self, *args):
+            return io.BytesIO(self.raw)
+
+    class Opener:
+        def open(self, request, **kwargs):
+            requested.append(request.full_url)
+            response = http.client.HTTPResponse(Socket(streams.pop(0)))
+            response.begin()
+            return response
+
+    client = BrokerClient(
+        BrokerClientConfig("https://broker.example.test", "cert.pem", "key.pem"),
+        ssl_context=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT),
+        opener=Opener(),
+    )
+    ssh = ScriptedSsh([])
+    process_pending_once(client, config, now=NOW, ssh_runner=ssh)
+    assert requested == [
+        "https://broker.example.test/v1/broker/requests/req-1",
+        "https://broker.example.test/v1/broker/requests/req-2",
+    ]
+    assert first.exists() and second.exists()
+    assert _key_and_cert_exist(config) and key2.exists()
+    assert ssh.calls == []
+    assert not (config.state_dir / "results").exists()

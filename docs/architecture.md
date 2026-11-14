@@ -38,9 +38,12 @@ and `expired`. Key and certificate material never appears in results or logs,
 and a consumed certificate is never re-requested.
 
 The client rejects redirects instead of carrying its mTLS context outside the
-configured endpoint. The bridge publishes complete pending files atomically
-and cleans up files created by a failed attempt. The worker retries classified
-broker-availability failures, but makes final status refusals terminal.
+configured endpoint. The bridge and worker share private atomic publication
+for pending inputs and terminal results; failed writes clean up their temporary
+files. Result publication precedes input removal so the reader handoff cannot
+look like a missing request. The worker retries classified broker-availability
+failures, including interrupted response framing, but makes final status
+refusals terminal. Deployers must run one poller per state directory.
 [Configuration](configuration.md#agent-bridge-and-worker) owns the detailed
 transport, publication and cleanup limits.
 

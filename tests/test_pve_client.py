@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import io
 import json
 import ssl
@@ -244,3 +245,42 @@ def test_error_response_is_closed_when_its_body_read_fails() -> None:
     with pytest.raises(BrokerUnavailable, match="broker HTTP 503"):
         _client(_FakeOpener([error])).request("GET", "/x")
     assert body.closed
+
+
+def _truncated_chunked_response(status):
+    raw = (
+        f"HTTP/1.1 {status} Synthetic\r\nTransfer-Encoding: chunked\r\n\r\n".encode("ascii")
+        + b'40\r\n{"status":"pending"}'
+    )
+
+    class Socket:
+        def makefile(self, *args):
+            return io.BytesIO(raw)
+
+    response = http.client.HTTPResponse(Socket())
+    response.begin()
+    return response
+
+
+def test_truncated_chunked_success_is_transient_and_closed() -> None:
+    response = _truncated_chunked_response(200)
+    with pytest.raises(BrokerUnavailable, match="broker unavailable: IncompleteRead"):
+        _client(_FakeOpener([response])).request("GET", "/x")
+    assert response.isclosed()
+
+
+@pytest.mark.parametrize("status", [409, 429, 502, 503, 504])
+def test_truncated_chunked_error_preserves_http_classification(status) -> None:
+    response = _truncated_chunked_response(status)
+    error = urllib.error.HTTPError("https://broker.example.test/x", status, "err", None, response)
+    expected = BrokerHTTPError if status == 409 else BrokerUnavailable
+    with pytest.raises(expected, match=f"broker HTTP {status}"):
+        _client(_FakeOpener([error])).request("GET", "/x")
+    assert response.isclosed()
+
+
+@pytest.mark.parametrize("error", [http.client.BadStatusLine("invalid"), http.client.LineTooLong("header")])
+def test_other_http_protocol_errors_are_final(error) -> None:
+    with pytest.raises(RuntimeError, match="broker HTTP response is unusable") as excinfo:
+        _client(_FakeOpener([error])).request("GET", "/x")
+    assert not isinstance(excinfo.value, BrokerUnavailable)

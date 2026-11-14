@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +20,7 @@ from typing import Any
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat, PublicFormat
 
+from ._state import write_state_json
 from .client import BrokerClient
 from .common import TYPED_ACTIONS
 
@@ -102,7 +102,6 @@ class ApprovalBridge:
         key_path = self._keys_dir / f"{key_id}.key"
         key_created = False
         published = False
-        temporary_path: Path | None = None
         try:
             self._keys_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
             fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -134,21 +133,7 @@ class ApprovalBridge:
                 "key_id": key_id,
                 "expires_at": expires_at,
             }
-            # The worker ignores .tmp files. Rename on the same filesystem
-            # only after writing and flushing a complete request.
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                dir=self._input_dir,
-                prefix=f".{request_id}.",
-                suffix=".tmp",
-                delete=False,
-            ) as pending:
-                temporary_path = Path(pending.name)
-                json.dump(input_data, pending)
-                pending.flush()
-                os.fsync(pending.fileno())
-            os.replace(temporary_path, self._input_dir / f"{request_id}.json")
+            write_state_json(self._input_dir / f"{request_id}.json", input_data)
             published = True
             return {
                 "request_id": request_id,
@@ -157,20 +142,19 @@ class ApprovalBridge:
                 "approval_url": f"{self._config.public_url.rstrip('/')}/v1/broker/requests/{request_id}/approval",
             }
         finally:
-            try:
-                if temporary_path is not None:
-                    temporary_path.unlink(missing_ok=True)
-            finally:
-                if key_created and not published:
-                    key_path.unlink(missing_ok=True)
+            if key_created and not published:
+                key_path.unlink(missing_ok=True)
 
     def read_status(self, request_id: str) -> dict[str, Any]:
         """Return the worker's terminal result, ``pending``, or ``unknown``."""
         if not isinstance(request_id, str) or not _UUID_RE.fullmatch(request_id):
             raise ValueError("request_id must be a canonical UUID")
+        # A worker publishes its result before removing the input. Observe
+        # the input first so that handoff cannot look like a missing request.
+        pending = (self._input_dir / f"{request_id}.json").exists()
         result_file = self._results_dir / f"{request_id}.json"
         if result_file.exists():
             return json.loads(result_file.read_text(encoding="utf-8"))
-        if (self._input_dir / f"{request_id}.json").exists():
+        if pending:
             return {"status": "pending"}
         return {"status": "unknown", "error": "request not found or expired"}

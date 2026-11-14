@@ -7,6 +7,7 @@ missing value fails closed instead of silently dialling a built-in address.
 
 from __future__ import annotations
 
+import http.client
 import json
 import ssl
 import urllib.error
@@ -133,7 +134,9 @@ class BrokerClient:
         except urllib.error.HTTPError as exc:
             try:
                 detail = exc.read(_DETAIL_LIMIT + 1).decode("utf-8", errors="replace")
-            except OSError:
+            except (OSError, http.client.HTTPException):
+                # The status is authoritative even when its detail stream is
+                # truncated or malformed; do not reclassify a final refusal.
                 detail = ""
             finally:
                 exc.close()
@@ -141,8 +144,10 @@ class BrokerClient:
             if exc.status in _RETRYABLE_STATUSES:
                 raise BrokerUnavailable(message) from exc
             raise BrokerHTTPError(exc.status, message) from exc
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        except (urllib.error.URLError, TimeoutError, OSError, http.client.IncompleteRead) as exc:
             raise BrokerUnavailable(f"broker unavailable: {type(exc).__name__}") from exc
+        except http.client.HTTPException as exc:
+            raise RuntimeError("broker HTTP response is unusable") from exc
         if len(raw) > _MAX_BODY_BYTES:
             raise RuntimeError("broker response too large")
         try:

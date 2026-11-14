@@ -341,3 +341,28 @@ def test_existing_key_is_not_overwritten_or_removed(bridge, config, monkeypatch)
         bridge.request_mutation("ct.reboot", 9001, "reason", broker)
     assert existing.read_text(encoding="utf-8") == "owned by another request"
     assert broker.calls == []
+
+
+def test_result_handoff_never_looks_like_a_missing_request(bridge, config, monkeypatch) -> None:
+    bridge.request_mutation("ct.reboot", 9001, "reason", FakeBroker())
+    input_path = config.state_dir / "input" / f"{VALID_ID}.json"
+    result_path = config.state_dir / "results" / f"{VALID_ID}.json"
+    real_exists = Path.exists
+    published = False
+
+    def handoff_exists(path):
+        nonlocal published
+        if path == result_path and not published:
+            # The result check happened just before the worker published and
+            # removed its input. Preserve that observed False for this call.
+            published = True
+            result_path.parent.mkdir()
+            result_path.write_text(json.dumps({"status": "denied"}), encoding="utf-8")
+            input_path.unlink()
+            return False
+        return real_exists(path)
+
+    monkeypatch.setattr(Path, "exists", handoff_exists)
+    first = bridge.read_status(VALID_ID)
+    assert first in ({"status": "pending"}, {"status": "denied"})
+    assert bridge.read_status(VALID_ID) == {"status": "denied"}

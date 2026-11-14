@@ -46,6 +46,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from ._state import write_state_json
 from .client import BrokerClient, BrokerHTTPError, BrokerUnavailable
 
 _LOG = logging.getLogger("privilege_broker.pve.worker")
@@ -241,7 +242,7 @@ def _finish(
 ) -> None:
     results_dir = config.state_dir / "results"
     results_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    (results_dir / f"{request_id}.json").write_text(json.dumps(result), encoding="utf-8")
+    write_state_json(results_dir / f"{request_id}.json", result)
     input_file.unlink(missing_ok=True)
     if isinstance(key_id, str):
         keys_dir = config.state_dir / "keys"
@@ -332,7 +333,10 @@ def run(
     ssh_runner: SshRunner | None = None,
     logger: logging.Logger | None = None,
 ) -> None:
-    """Poll forever. Importing the module never starts this."""
+    """Poll forever; the deployer must run only one poller per state directory.
+
+    Importing the module never starts a poller. No singleton lock is installed.
+    """
     log = logger or _LOG
     for name in ("input", "results", "keys"):
         (config.state_dir / name).mkdir(mode=0o700, parents=True, exist_ok=True)

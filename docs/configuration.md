@@ -133,6 +133,10 @@ proxies disabled. It rejects every redirect, including same-origin redirects,
 rather than forwarding the mTLS context or accepting a downgrade to HTTP.
 HTTP error bodies are read only up to the detail limit and closed, including
 when a body read fails; producing an error message does not drain the response.
+Interrupted response framing is a transient availability failure. If an HTTP
+error status is already known, that status keeps its retry/final classification
+even when the detail stream is truncated. Other HTTP protocol errors are final
+unusable responses, not unhandled exceptions that stop the worker.
 
 `bridge.request_mutation(action, ct_id, reason, client)` validates the typed
 action, target and reason. It creates an ephemeral Ed25519 key exclusively
@@ -148,8 +152,11 @@ Cleanup covers failures that return through Python; process termination or a
 filesystem that refuses deletion can leave files. No orphan-recovery sweeper
 is implemented. Deployers own state-directory protection and recovery.
 
-The worker polls `input/` once per `process_pending_once(client, worker_config)`
-call (or forever via `run`). A request past its deadline plus `expiry_grace` is
+Run exactly one poller per state directory, including calls to
+`process_pending_once`. No singleton lock or multi-poller coordination is
+implemented. The worker polls `input/` once per
+`process_pending_once(client, worker_config)` call (or forever via `run`).
+A request past its deadline plus `expiry_grace` is
 expired locally without asking the broker, which bounds all retries. Transient
 broker failures (network, timeout, HTTP 429/502/503/504) before dispatch keep
 the request for the next poll. Final status-poll refusals, including HTTP
@@ -164,8 +171,12 @@ with `not_on_this_node` and the next configured node is tried with the same
 certificate; a transport timeout is `unknown` and is never retried. Results in
 `results/{request_id}.json` are `succeeded`, `failed`, `unknown`, `error`,
 `denied`, `cancelled` or `expired`; key and certificate material never appears
-in results or logs. The target dispatcher and its durable claim store remain
-OpenSpec task 4.2.
+in results or logs. Results use the same private atomic publication as pending
+inputs and become visible before the worker removes the input and key. Readers
+therefore see a pending request or complete terminal JSON during publication,
+not a partially written result. A failed result write leaves input and keys
+intact and removes its temporary file; it does not publish partial JSON.
+The target dispatcher and its durable claim store remain OpenSpec task 4.2.
 
 ## Certificate source restriction
 
