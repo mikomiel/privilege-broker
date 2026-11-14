@@ -34,6 +34,7 @@ from privilege_broker.pve.dispatcher import (
     read_request,
     verify_lease,
 )
+from privilege_broker.pve.worker import WorkerConfig, process_pending_once
 
 NOW = 1_800_000_000
 CT_ID = 9001
@@ -289,7 +290,11 @@ def test_stored_claim_for_other_arguments_is_unknown(config, private_key) -> Non
     runner = Runner([])
     exit_code, output = _run(config, private_key, _request_json(private_key, "ct.start"), runner)
     assert exit_code == 1
-    assert output == {"error": "previous dispatch outcome is unknown; it is never retried", "exit_code": 1}
+    assert output == {
+        "error": "previous dispatch outcome is unknown; it is never retried",
+        "exit_code": 1,
+        "outcome": "unknown",
+    }
     assert runner.calls == []
 
 
@@ -541,6 +546,7 @@ def test_result_persistence_failure_reports_uncertainty_without_reexecution(conf
     assert output == {
         "error": "operation ran but its result could not be recorded; outcome unknown",
         "exit_code": 1,
+        "outcome": "unknown",
     }
     assert len(runner.calls) == 1
 
@@ -591,7 +597,11 @@ def test_undecodable_output_is_unknown_and_never_reexecuted(config, private_key)
     text = _request_json(private_key)
     exit_code, output = _run(config, private_key, text, bad_output)
     assert exit_code == 1
-    assert output == {"error": "command output could not be decoded; outcome unknown", "exit_code": 1}
+    assert output == {
+        "error": "command output could not be decoded; outcome unknown",
+        "exit_code": 1,
+        "outcome": "unknown",
+    }
     with ClaimStore(config.claim_db_path) as store:
         stored = store.get(LEASE_ID)
     assert stored is not None and stored["state"] == "UNKNOWN"
@@ -728,6 +738,94 @@ def test_stalled_request_read_times_out() -> None:
                 read_request(source, timeout=0.1)
     finally:
         os.close(write_end)
+
+
+class _WorkerBroker:
+    """Minimal broker: approved status, one lease and one certificate."""
+
+    def request(self, method: str, path: str, payload: dict | None = None) -> dict:
+        if path.endswith("/lease"):
+            return {"lease_id": LEASE_ID, "signature": "AAAA", "audience": AUDIENCE}
+        if path.endswith("/certificate"):
+            return {"status": "issued", "certificate": "SYNTHETIC-CERT"}
+        return {"status": "approved"}
+
+
+class _WorkerSsh:
+    def __init__(self, result: CompletedProcess[str]) -> None:
+        self.result = result
+        self.calls: list[list[str]] = []
+
+    def __call__(self, argv: list[str], **kwargs: object) -> CompletedProcess[str]:
+        self.calls.append(list(argv))
+        return self.result
+
+
+def _worker_config(state_dir: Path) -> WorkerConfig:
+    return WorkerConfig(
+        state_dir=state_dir,
+        targets=("ops@node-a", "ops@node-b"),
+        ssh_port=22,
+        known_hosts_path=str(state_dir / "known_hosts"),
+        ssh_timeout=30,
+    )
+
+
+def _worker_input(state_dir: Path) -> None:
+    (state_dir / "input").mkdir(parents=True, exist_ok=True)
+    (state_dir / "keys").mkdir(exist_ok=True)
+    (state_dir / "keys" / "key-1.key").write_text("synthetic", encoding="utf-8")
+    (state_dir / "input" / "req-1.json").write_text(
+        json.dumps(
+            {
+                "action": "ct.start",
+                "ct_id": CT_ID,
+                "reason": "synthetic",
+                "public_key": "ssh-ed25519 AAAA synthetic",
+                "key_id": "key-1",
+                "expires_at": NOW + 300,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.parametrize("failure", ["timeout", "persistence"])
+def test_worker_publishes_unknown_from_real_dispatcher_output(config, private_key, tmp_path, failure) -> None:
+    class FailingComplete(ClaimStore):
+        def complete(self, *args: object, **kwargs: object) -> None:
+            raise sqlite3.OperationalError("database or disk is full")
+
+    from subprocess import TimeoutExpired
+
+    runner: object = (
+        (lambda argv, **kwargs: (_ for _ in ()).throw(TimeoutExpired(cmd="pct", timeout=30)))
+        if failure == "timeout"
+        else Runner([CompletedProcess([], 0, "done", "")])
+    )
+    store = FailingComplete(config.claim_db_path) if failure == "persistence" else None
+    exit_code, output = dispatch(
+        parse_request(_request_json(private_key)),
+        config,
+        public_key=private_key.public_key(),
+        now=NOW,
+        store=store,
+        runner=runner,
+    )
+    assert exit_code == 1
+    assert output["outcome"] == "unknown"
+
+    state_dir = tmp_path / f"worker-{failure}"
+    worker_config = _worker_config(state_dir)
+    _worker_input(state_dir)
+    ssh = _WorkerSsh(CompletedProcess([], exit_code, json.dumps(output), ""))
+    process_pending_once(_WorkerBroker(), worker_config, now=NOW, ssh_runner=ssh)
+
+    result = json.loads((state_dir / "results" / "req-1.json").read_text(encoding="utf-8"))
+    assert result["status"] == "unknown"
+    assert result["dispatcher_outcome"] == "unknown"
+    # One node only: uncertainty never triggers failover or a redispatch.
+    assert len(ssh.calls) == 1
 
 
 def test_verify_lease_returns_claims(private_key) -> None:

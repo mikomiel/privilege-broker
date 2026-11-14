@@ -453,6 +453,15 @@ def _refusal(message: str) -> tuple[int, dict[str, Any]]:
     return (1, {"error": message, "exit_code": 1})
 
 
+def _uncertain(message: str) -> tuple[int, dict[str, Any]]:
+    """Refuse with an explicit uncertainty marker the worker maps to ``unknown``.
+
+    The operation may have run, so only the exit code would read as a plain
+    failure. ``outcome`` keeps that distinction across the handoff.
+    """
+    return (1, {"error": message, "exit_code": 1, "outcome": "unknown"})
+
+
 def _on_this_node(config: DispatchConfig, ct_id: int) -> bool:
     """Report container locality without claiming authority.
 
@@ -561,7 +570,7 @@ def dispatch(
                 },
             )
         if state == "UNKNOWN":
-            return _refusal("previous dispatch outcome is unknown; it is never retried")
+            return _uncertain("previous dispatch outcome is unknown; it is never retried")
 
         try:
             result = runner(
@@ -573,7 +582,7 @@ def dispatch(
             )
         except subprocess.TimeoutExpired:
             record("UNKNOWN", None, "", "timed out")
-            return _refusal("operation timed out; the remote outcome is unknown")
+            return _uncertain("operation timed out; the remote outcome is unknown")
         except OSError:
             record("FAILED", 1, "", "spawn failed")
             return _refusal("operation could not be started")
@@ -581,14 +590,14 @@ def dispatch(
             # Decoding can fail after the command ran; the outcome is unknown and
             # the claim stays UNKNOWN, so the lease is never executed again.
             record("UNKNOWN", None, "", "undecodable output")
-            return _refusal("command output could not be decoded; outcome unknown")
+            return _uncertain("command output could not be decoded; outcome unknown")
 
         exit_code = int(result.returncode)
         stored_state = "SUCCEEDED" if exit_code == 0 else "FAILED"
         if not record(stored_state, exit_code, result.stdout, result.stderr):
             # The operation may have run. Report that uncertainty instead of a
             # traceback, and never re-execute: the claim stays CLAIMED.
-            return _refusal("operation ran but its result could not be recorded; outcome unknown")
+            return _uncertain("operation ran but its result could not be recorded; outcome unknown")
         return (
             exit_code,
             {
