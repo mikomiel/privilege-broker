@@ -19,14 +19,16 @@ result, and a claim left ``CLAIMED`` (the process died) becomes ``UNKNOWN``
 instead of being retried. A node that does not host the container answers before
 the claim, so the worker may present the same lease to the next configured node.
 
-**At-most-once scope.** The guarantee is scoped to one claim database. A lease
-that is still valid can be presented to a second node that keeps its own
-database, and a container that later moved there would run again. Multi-node
-deployments MUST therefore point every eligible dispatcher at one shared
-database, or run exactly one eligible executor. A local database per node is safe
-only while a target cannot move to another eligible node inside the lease
-lifetime. Binding a lease to one executor in the broker needs a wire change and
-is tracked separately.
+**At-most-once scope.** The guarantee is scoped to one host and one claim
+database. A lease that is still valid can be presented to a second node with its
+own database, and a container that later moved there would run again. This
+implementation therefore supports exactly one eligible executor per target: the
+dispatcher host must be the only node that can run that target's operation for
+the lease lifetime, which is why a target that can migrate is out of scope.
+SQLite WAL is a single-host mechanism; do not share the database over a network
+filesystem. Cross-host exclusivity needs a coordination service the broker
+controls, and binding a lease to one executor needs a wire change; both are
+tracked separately.
 
 ``ct.snapshot_prune`` is not dispatched yet; it arrives with OpenSpec task 4.3.
 The request is refused before any claim, so no authority is consumed.
@@ -511,8 +513,21 @@ def dispatch(
 
     owns_store = store is None
     claim_store = store or ClaimStore(config.claim_db_path)
+
+    def record(state: str, exit_code: int | None, stdout: str, stderr: str) -> bool:
+        try:
+            claim_store.complete(request.lease.lease_id, state, exit_code, stdout, stderr, now)
+        except sqlite3.Error:
+            # The claim row keeps its CLAIMED state, so a later presentation is
+            # UNKNOWN rather than a second execution.
+            return False
+        return True
+
     try:
-        state, stored = claim_store.claim(request.lease.lease_id, request.action, request.ct_id, now)
+        try:
+            state, stored = claim_store.claim(request.lease.lease_id, request.action, request.ct_id, now)
+        except sqlite3.Error:
+            return _refusal("claim store is unavailable; nothing was executed")
         if state in ("SUCCEEDED", "FAILED"):
             assert stored is not None
             return (
@@ -537,15 +552,18 @@ def dispatch(
                 timeout=config.command_timeout,
             )
         except subprocess.TimeoutExpired:
-            claim_store.complete(request.lease.lease_id, "UNKNOWN", None, "", "timed out", now)
+            record("UNKNOWN", None, "", "timed out")
             return _refusal("operation timed out; the remote outcome is unknown")
         except OSError:
-            claim_store.complete(request.lease.lease_id, "FAILED", 1, "", "spawn failed", now)
+            record("FAILED", 1, "", "spawn failed")
             return _refusal("operation could not be started")
 
         exit_code = int(result.returncode)
-        final_state = "SUCCEEDED" if exit_code == 0 else "FAILED"
-        claim_store.complete(request.lease.lease_id, final_state, exit_code, result.stdout, result.stderr, now)
+        stored_state = "SUCCEEDED" if exit_code == 0 else "FAILED"
+        if not record(stored_state, exit_code, result.stdout, result.stderr):
+            # The operation may have run. Report that uncertainty instead of a
+            # traceback, and never re-execute: the claim stays CLAIMED.
+            return _refusal("operation ran but its result could not be recorded; outcome unknown")
         return (
             exit_code,
             {

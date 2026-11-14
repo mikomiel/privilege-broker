@@ -475,6 +475,71 @@ def test_main_rejects_a_bad_public_key(config, private_key) -> None:
     assert json.loads(out.getvalue())["error"] == "lease public key is unreadable"
 
 
+class _BrokenStore:
+    """Claim store whose chosen operation fails after the runner returns."""
+
+    def __init__(self, *, fail_claim: bool = False, fail_complete: bool = False) -> None:
+        self.fail_claim = fail_claim
+        self.fail_complete = fail_complete
+        self.claim_calls = 0
+        self.complete_calls = 0
+        self.states: list[str] = []
+
+    def claim(self, lease_id: str, action: str, ct_id: int, now: int):
+        self.claim_calls += 1
+        if self.fail_claim:
+            raise sqlite3.OperationalError("database or disk is full")
+        return ("CLAIMED", None)
+
+    def complete(self, lease_id: str, state: str, exit_code, stdout: str, stderr: str, now: int) -> None:
+        self.complete_calls += 1
+        self.states.append(state)
+        if self.fail_complete:
+            raise sqlite3.OperationalError("database or disk is full")
+
+    def close(self) -> None:
+        raise AssertionError("an injected store is owned by its caller")
+
+
+def test_claim_store_failure_before_execution_refuses_without_running(config, private_key) -> None:
+    store = _BrokenStore(fail_claim=True)
+    runner = Runner([])
+    exit_code, output = dispatch(
+        parse_request(_request_json(private_key)),
+        config,
+        public_key=private_key.public_key(),
+        now=NOW,
+        store=store,
+        runner=runner,
+    )
+    assert exit_code == 1
+    assert output == {"error": "claim store is unavailable; nothing was executed", "exit_code": 1}
+    assert runner.calls == []
+    assert store.claim_calls == 1
+
+
+def test_result_persistence_failure_reports_uncertainty_without_reexecution(config, private_key) -> None:
+    store = _BrokenStore(fail_complete=True)
+    runner = Runner([CompletedProcess([], 0, "done", "")])
+    exit_code, output = dispatch(
+        parse_request(_request_json(private_key)),
+        config,
+        public_key=private_key.public_key(),
+        now=NOW,
+        store=store,
+        runner=runner,
+    )
+    assert exit_code == 1
+    assert output == {
+        "error": "operation ran but its result could not be recorded; outcome unknown",
+        "exit_code": 1,
+    }
+    assert store.states == ["SUCCEEDED"]
+    assert len(runner.calls) == 1
+    # The claim was never released, so a later presentation cannot execute again.
+    assert store.complete_calls == 1
+
+
 def test_verify_lease_returns_claims(private_key) -> None:
     claims = _lease_claims()
     signature = private_key.sign(canonical_json(claims).encode("ascii"))

@@ -259,6 +259,10 @@ storage, a claim left `CLAIMED` by a dead process becomes `UNKNOWN`, and a store
 claim whose action or target differs from the presented request is refused as
 `UNKNOWN`. Truncated output is stored at 4096 bytes per stream.
 
+At-most-once dispatch is bound to one host: run exactly one eligible executor
+per target for the lease lifetime, and never place the SQLite database on a
+network filesystem. A target that can move to another dispatcher inside that
+lifetime is out of scope until broker-side executor binding exists.
 `ct.snapshot_prune` is refused before any claim until OpenSpec task 4.3 lands, so
 a broker-approved prune fails closed rather than running unpreserved logic.
 

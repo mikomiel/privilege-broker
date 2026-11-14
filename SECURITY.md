@@ -38,9 +38,12 @@ frontend-authenticated identity. The TLS frontend, private keys and isolation
 remain deployer responsibilities. The service can sign a restricted SSH
 certificate. The package includes the agent-side bridge, mTLS client
 and worker, and the target dispatcher with its durable SQLite claim store.
-At-most-once dispatch is scoped to one claim database: a multi-node deployment
-must share that database or run exactly one eligible executor, otherwise a
-lease can run again on a second node after a target migrates. Policy-bounded
+At-most-once dispatch is scoped to one host and one claim database: exactly one
+eligible executor may serve a target for the lease lifetime, and the SQLite
+database must not be shared over a network filesystem. A target that can move to
+a second dispatcher inside that lifetime is out of scope until the broker binds
+a lease to one executor; cross-host exclusivity needs broker-controlled
+coordination, not a shared WAL file. Policy-bounded
 snapshot pruning and a generic outcome API are not included yet. The client
 rejects redirects; deployers must supply the broker endpoint, trust material,
 claim storage and protected worker state. Approval and certificate issuance
