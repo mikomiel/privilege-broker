@@ -36,8 +36,12 @@ No response-time or bounty commitment is made.
 The extracted service verifies passkey ceremonies and binds authorization to
 frontend-authenticated identity. The TLS frontend, private keys and isolation
 remain deployer responsibilities. The service can sign a restricted SSH
-certificate. The package includes the agent-side bridge, mTLS client and
-worker, but not the target dispatcher or its durable replay store. The client
-rejects redirects; deployers must supply the broker endpoint, trust material
-and protected worker state. Approval and certificate issuance are not
-evidence that an operation ran.
+certificate. The package includes the agent-side bridge, mTLS client
+and worker, and the target dispatcher with its durable SQLite claim store.
+At-most-once dispatch is scoped to one claim database: a multi-node deployment
+must share that database or run exactly one eligible executor, otherwise a
+lease can run again on a second node after a target migrates. Policy-bounded
+snapshot pruning and a generic outcome API are not included yet. The client
+rejects redirects; deployers must supply the broker endpoint, trust material,
+claim storage and protected worker state. Approval and certificate issuance
+are not evidence that an operation ran.

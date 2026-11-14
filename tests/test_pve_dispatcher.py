@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import sqlite3
 import threading
 from pathlib import Path
 from subprocess import CompletedProcess
@@ -358,10 +359,44 @@ def test_stored_output_is_truncated(config, private_key) -> None:
 
 
 def test_claim_store_is_private(config) -> None:
-    with ClaimStore(config.claim_db_path):
-        pass
+    with ClaimStore(config.claim_db_path) as store:
+        assert store.synchronous_level == 2
     assert config.claim_db_path.stat().st_mode & 0o777 == 0o600
     assert config.claim_db_path.parent.stat().st_mode & 0o777 == 0o700
+
+
+def test_claim_is_committed_before_the_command_runs(config, private_key) -> None:
+    observed: list[str] = []
+
+    def inspecting_runner(argv, **kwargs):
+        # A separate connection models another reader after a crash; seeing the
+        # claim here proves the claim was committed before the operation started.
+        with sqlite3.connect(config.claim_db_path) as other:
+            row = other.execute("SELECT state FROM dispatch_claims WHERE lease_id = ?", (LEASE_ID,)).fetchone()
+        observed.append(row[0] if row else "MISSING")
+        return CompletedProcess(argv, 0, "done", "")
+
+    exit_code, _ = _run(config, private_key, _request_json(private_key), inspecting_runner)
+    assert exit_code == 0
+    assert observed == ["CLAIMED"]
+
+
+def test_separate_claim_databases_do_not_share_claims(config, private_key, tmp_path) -> None:
+    """Documents the documented deployment requirement, not a happy path.
+
+    Each node keeps local state, so the same lease can run once per database.
+    Multi-node deployments must share one database or keep one eligible executor.
+    """
+    other = DispatchConfig(
+        policy_path=config.policy_path,
+        lease_public_key_path=config.lease_public_key_path,
+        claim_db_path=tmp_path / "other-node" / "claims.sqlite3",
+        lxc_conf_dir=config.lxc_conf_dir,
+    )
+    runner = Runner([CompletedProcess([], 0, "done", "")])
+    assert _run(config, private_key, _request_json(private_key), runner)[0] == 0
+    assert _run(other, private_key, _request_json(private_key), runner)[0] == 0
+    assert len(runner.calls) == 2
 
 
 def test_prune_is_refused_before_claiming(config, private_key) -> None:
@@ -389,6 +424,7 @@ def test_parse_request_refusals(document, message) -> None:
 
 
 def test_main_prints_one_json_document(config, private_key) -> None:
+    runner = Runner([CompletedProcess([], 0, "ok", "")])
     out = io.StringIO()
     exit_code = main(
         [
@@ -403,13 +439,20 @@ def test_main_prints_one_json_document(config, private_key) -> None:
         ],
         stdin=io.StringIO(_request_json(private_key)),
         stdout=out,
+        runner=runner,
+        clock=lambda: NOW,
     )
-    assert exit_code == 1  # the real runner never runs pct in this test
-    payload = json.loads(out.getvalue())
-    assert payload["exit_code"] == 1
+    assert exit_code == 0
+    assert json.loads(out.getvalue()) == {
+        "exit_code": 0,
+        "stdout": "ok",
+        "stderr": "",
+        "lease_id": LEASE_ID,
+    }
+    assert runner.calls[0][0] == ["/usr/bin/sudo", "/usr/sbin/pct", "start", "9001"]
 
 
-def test_main_rejects_a_bad_public_key(config) -> None:
+def test_main_rejects_a_bad_public_key(config, private_key) -> None:
     config.lease_public_key_path.write_text("not a key", encoding="utf-8")
     out = io.StringIO()
     exit_code = main(
@@ -423,11 +466,13 @@ def test_main_rejects_a_bad_public_key(config) -> None:
             "--lxc-conf-dir",
             str(config.lxc_conf_dir),
         ],
-        stdin=io.StringIO("{}"),
+        stdin=io.StringIO(_request_json(private_key)),
         stdout=out,
+        runner=Runner([]),
+        clock=lambda: NOW,
     )
     assert exit_code == 1
-    assert json.loads(out.getvalue())["exit_code"] == 1
+    assert json.loads(out.getvalue())["error"] == "lease public key is unreadable"
 
 
 def test_verify_lease_returns_claims(private_key) -> None:

@@ -1,9 +1,11 @@
 # PVE configuration
 
-This pre-release stage supplies authorization, approval, certificate signing
-and the agent-side bridge and worker, but not the target dispatcher. Deployment,
-credentials, TLS and consumer cutover remain separate operator decisions. No
-example grants access to a real target.
+This pre-release stage supplies authorization, approval, certificate signing,
+the agent-side bridge and worker, and the target-side dispatcher with its
+durable claim store. Policy-bounded snapshot pruning and the generic
+execution-outcome API are not included yet. Deployment, credentials, TLS and
+consumer cutover remain separate operator decisions. No example grants access
+to a real target.
 
 ## Target policy
 
@@ -211,7 +213,8 @@ visible before the worker removes the input and key. Readers
 therefore see a pending request or complete terminal JSON during publication,
 not a partially written result. A failed result write leaves input and keys
 intact and removes its temporary file; it does not publish partial JSON.
-The target dispatcher and its durable claim store remain OpenSpec task 4.2.
+The target dispatcher and its claim store are included. Policy-bounded snapshot
+pruning remains OpenSpec task 4.3 and the generic outcome API task 5.1.
 
 ## Target dispatcher
 
@@ -248,7 +251,9 @@ the command line except the validated positive container ID and, for a snapshot,
 a name derived from the lease UUID.
 
 The claim store is a SQLite WAL database with its parent at mode `0700` and the
-file at `0600` where the filesystem permits. It is created by the dispatcher
+file at `0600` where the filesystem permits. That mode is applied when the
+dispatcher creates the directory: an existing parent keeps whatever mode it
+already has, and the deployer must verify it. It is created by the dispatcher
 identity; never open it with `sudo` or as root. A terminal claim is replayed from
 storage, a claim left `CLAIMED` by a dead process becomes `UNKNOWN`, and a stored
 claim whose action or target differs from the presented request is refused as
@@ -275,9 +280,10 @@ The builder only returns argv; the configured service signer invokes local
 `ssh-keygen` with that argv and a timeout. It does not connect to PVE.
 
 A certificate is safe only with the trusted typed dispatcher and lease
-verification on the target. The target dispatcher and its claim store are not
-extracted yet (OpenSpec task 4.2). Do not treat certificate issuance as an
-operation outcome or enable a general shell while waiting for the dispatcher.
+verification on the target. The extracted dispatcher performs that verification
+and enforces the same policy before it claims the lease; snapshot pruning is
+still OpenSpec task 4.3. Do not treat certificate issuance as an operation
+outcome, and never enable a general shell as a substitute for the dispatcher.
 
 ## Operator notifications
 

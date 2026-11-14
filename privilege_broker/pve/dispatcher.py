@@ -13,11 +13,20 @@ Output contract, preserved from the retained implementation::
     refusal          {"error": "...", "exit_code": 1}              exit 1
     wrong node       {"error": "not_on_this_node", "exit_code": 3} exit 3
 
-Nothing executes twice: a lease is claimed before the command starts, a repeat
-presentation returns the stored terminal result, and a claim left ``CLAIMED``
-(the process died) becomes ``UNKNOWN`` instead of being retried. A node that
-does not host the container answers before the claim, so the worker may present
-the same lease to the next configured node.
+Nothing executes twice in one claim database: a lease is committed durably
+before the command starts, a repeat presentation returns the stored terminal
+result, and a claim left ``CLAIMED`` (the process died) becomes ``UNKNOWN``
+instead of being retried. A node that does not host the container answers before
+the claim, so the worker may present the same lease to the next configured node.
+
+**At-most-once scope.** The guarantee is scoped to one claim database. A lease
+that is still valid can be presented to a second node that keeps its own
+database, and a container that later moved there would run again. Multi-node
+deployments MUST therefore point every eligible dispatcher at one shared
+database, or run exactly one eligible executor. A local database per node is safe
+only while a target cannot move to another eligible node inside the lease
+lifetime. Binding a lease to one executor in the broker needs a wire change and
+is tracked separately.
 
 ``ct.snapshot_prune`` is not dispatched yet; it arrives with OpenSpec task 4.3.
 The request is refused before any claim, so no authority is consumed.
@@ -42,7 +51,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from cryptography.exceptions import InvalidSignature
+from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives.serialization import load_ssh_public_key
 
@@ -305,7 +314,7 @@ def load_lease_public_key(path: Path) -> Ed25519PublicKey:
     """Load the deployer-supplied Ed25519 lease verification key."""
     try:
         key = load_ssh_public_key(Path(path).read_bytes())
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, UnsupportedAlgorithm) as exc:
         raise ValueError("lease public key is unreadable") from exc
     if not isinstance(key, Ed25519PublicKey):
         raise ValueError("lease public key must be Ed25519")
@@ -342,7 +351,9 @@ class ClaimStore:
         self._connection.executescript(
             """
             PRAGMA journal_mode=WAL;
-            PRAGMA synchronous=NORMAL;
+            -- FULL fsyncs every commit, so a claim is durable before the
+            -- operation starts. NORMAL can lose an acknowledged claim.
+            PRAGMA synchronous=FULL;
             CREATE TABLE IF NOT EXISTS dispatch_claims (
               lease_id TEXT PRIMARY KEY,
               action TEXT NOT NULL,
@@ -361,6 +372,11 @@ class ClaimStore:
         except OSError:
             # A filesystem that refuses chmod keeps the umask-protected mode.
             pass
+
+    @property
+    def synchronous_level(self) -> int:
+        """SQLite durability of this connection: 2 is ``FULL``, 1 is ``NORMAL``."""
+        return int(self._connection.execute("PRAGMA synchronous").fetchone()[0])
 
     def close(self) -> None:
         self._connection.close()
@@ -544,8 +560,19 @@ def dispatch(
             claim_store.close()
 
 
-def main(argv: list[str] | None = None, *, stdin: Any = None, stdout: Any = None) -> int:
-    """Read one request, dispatch it and print one JSON document."""
+def main(
+    argv: list[str] | None = None,
+    *,
+    stdin: Any = None,
+    stdout: Any = None,
+    runner: Runner = subprocess.run,
+    clock: Callable[[], int] = time.time,
+) -> int:
+    """Read one request, dispatch it and print one JSON document.
+
+    ``runner`` and ``clock`` are injectable so a test never runs ``pct`` and
+    never depends on wall-clock time.
+    """
     parser = argparse.ArgumentParser(prog="privilege-broker-dispatcher", description=__doc__)
     parser.add_argument("--policy", required=True, type=Path, dest="policy_path")
     parser.add_argument("--lease-public-key", required=True, type=Path, dest="lease_public_key_path")
@@ -571,7 +598,7 @@ def main(argv: list[str] | None = None, *, stdin: Any = None, stdout: Any = None
         out.write(json.dumps(output) + "\n")
         out.flush()
         return exit_code
-    exit_code, output = dispatch(request, config, public_key=public_key, now=int(time.time()))
+    exit_code, output = dispatch(request, config, public_key=public_key, now=int(clock()), runner=runner)
     out.write(json.dumps(output) + "\n")
     out.flush()
     return exit_code
