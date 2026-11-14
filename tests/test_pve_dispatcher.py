@@ -659,9 +659,10 @@ def test_deeply_nested_request_is_refused(config, private_key) -> None:
     deepest = "[" * 200000 + "0" + "]" * 200000
     with pytest.raises(ValueError, match="not valid JSON"):
         parse_request(deepest)
-    # Within the 64 KiB stdin bound the decoder succeeds, so the object-shape
-    # check still refuses it without reaching a claim or the runner.
-    nested = "[" * 2000 + "0" + "]" * 2000
+    # Within the 64 KiB stdin bound the decoder depth is interpreter-dependent:
+    # CPython 3.11 raises RecursionError, newer decoders return a list. Both are
+    # fixed refusals, and neither may reach a claim or the runner.
+    nested = "[" * 5000 + "0" + "]" * 5000
     runner = Runner([])
     out = io.StringIO()
     exit_code = main(
@@ -681,7 +682,40 @@ def test_deeply_nested_request_is_refused(config, private_key) -> None:
         clock=lambda: NOW,
     )
     assert exit_code == 1
-    assert json.loads(out.getvalue()) == {"error": "request must be a JSON object", "exit_code": 1}
+    refusal = json.loads(out.getvalue())
+    assert refusal["exit_code"] == 1
+    assert refusal["error"] in {"request is not valid JSON", "request must be a JSON object"}
+    assert runner.calls == []
+    assert not config.claim_db_path.exists()
+
+
+def test_shallow_array_is_refused_by_shape() -> None:
+    with pytest.raises(ValueError, match="must be a JSON object"):
+        parse_request("[1]")
+
+
+def test_dev_null_stdin_is_refused_with_json(config, private_key) -> None:
+    runner = Runner([])
+    out = io.StringIO()
+    with open(os.devnull, encoding="utf-8") as source:
+        exit_code = main(
+            [
+                "--policy",
+                str(config.policy_path),
+                "--lease-public-key",
+                str(config.lease_public_key_path),
+                "--claim-db",
+                str(config.claim_db_path),
+                "--lxc-conf-dir",
+                str(config.lxc_conf_dir),
+            ],
+            stdin=source,
+            stdout=out,
+            runner=runner,
+            clock=lambda: NOW,
+        )
+    assert exit_code == 1
+    assert json.loads(out.getvalue()) == {"error": "request is not valid JSON", "exit_code": 1}
     assert runner.calls == []
     assert not config.claim_db_path.exists()
 

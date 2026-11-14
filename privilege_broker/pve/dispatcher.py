@@ -618,9 +618,11 @@ def read_request(source: Any, *, limit: int = MAX_REQUEST_BYTES, timeout: float 
             raise ValueError("request is too large") from None
         return document
 
-    if stat.S_ISREG(os.fstat(descriptor).st_mode):
-        # A regular file cannot be registered with epoll; its size is fixed, so
-        # one bounded read needs no deadline.
+    mode = os.fstat(descriptor).st_mode
+    if not stat.S_ISFIFO(mode) and not stat.S_ISSOCK(mode):
+        # A regular file or a character device such as /dev/null cannot be
+        # registered with epoll. Their size is known, so one bounded read needs
+        # no deadline.
         document = source.read(limit + 1)
         if len(document) > limit:
             raise ValueError("request is too large") from None
@@ -630,24 +632,29 @@ def read_request(source: Any, *, limit: int = MAX_REQUEST_BYTES, timeout: float 
     total = 0
     deadline = time.monotonic() + timeout
     os.set_blocking(descriptor, False)
-    with selectors.DefaultSelector() as selector:
-        selector.register(descriptor, selectors.EVENT_READ)
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise ValueError("request read timed out") from None
-            if not selector.select(remaining):
-                raise ValueError("request read timed out") from None
-            try:
-                chunk = os.read(descriptor, min(8192, limit + 1 - total))
-            except BlockingIOError:
-                continue
-            if not chunk:
-                break
-            total += len(chunk)
-            if total > limit:
-                raise ValueError("request is too large") from None
-            chunks.append(chunk)
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(descriptor, selectors.EVENT_READ)
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ValueError("request read timed out") from None
+                if not selector.select(remaining):
+                    raise ValueError("request read timed out") from None
+                try:
+                    chunk = os.read(descriptor, min(8192, limit + 1 - total))
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > limit:
+                    raise ValueError("request is too large") from None
+                chunks.append(chunk)
+    except OSError:
+        # A descriptor that cannot be registered or read is still a refusal,
+        # never a traceback with empty stdout.
+        raise ValueError("request could not be read") from None
     return b"".join(chunks).decode("utf-8", errors="replace")
 
 
