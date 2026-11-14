@@ -175,11 +175,39 @@ and never requests a second certificate. Dispatch uses fixed non-interactive SSH
 sends `{"action", "ct_id", "lease", "signature"}` on stdin, preserving the
 dispatcher wire contract. A node that does not host the target answers exit 3
 with `not_on_this_node` and the next configured node is tried with the same
-certificate; a transport timeout is `unknown` and is never retried. Results in
-`results/{request_id}.json` are `succeeded`, `failed`, `unknown`, `error`,
-`denied`, `cancelled` or `expired`; key and certificate material never appears
-in results or logs. Results use the same private atomic publication as pending
-inputs and become visible before the worker removes the input and key. Readers
+certificate. A transport timeout, capture-limit abort or capture I/O failure is
+`unknown`: the remote operation may have run, so no failover or redispatch is
+attempted. Stopping the local SSH process does not prove remote cancellation.
+Results in `results/{request_id}.json` are
+`succeeded`, `failed`, `unknown`, `error`,
+`denied`, `cancelled` or `expired`. Worker-generated diagnostics use fixed
+phase/status summaries, not arbitrary exception text or upstream HTTP error
+details, including transient status, lease and certificate failures. A final
+HTTP refusal is reported as `broker status HTTP <code>` or
+`broker dispatch HTTP <code>`; other dispatch exceptions become
+`dispatch failed`. These summaries do not contain key or certificate material.
+Captured executor output remains operational data, not a general secret
+scrubber: the trusted executor must not emit credentials.
+
+The default SSH adapter requires POSIX nonblocking pipes and retains at most
+64 KiB combined stdout/stderr bytes. It reads at most one additional byte to
+detect overflow, multiplexes stdin and both output streams, and applies
+`ssh_timeout` to I/O and the wait for exit. Timeout, overflow and capture faults
+terminate the owned local process group and reap its leader before returning
+an unknown outcome. This is bounded capture and cleanup, not an overall heap
+limit or a sandbox against deliberately escaping subprocesses.
+
+Stored stdout/stderr excerpts and lifted `dispatcher_lease_id` and
+`dispatcher_error` strings are limited to 4096 characters each; they are
+excerpts, not new authorization evidence. Only string lease/error fields and
+a boolean `dispatcher_replayed` are lifted from dispatcher JSON. Custom
+`ssh_runner` implementations retain the existing callable shape but own the
+same bounds and ambiguity contract; after starting SSH they must report
+ambiguous aborts with `subprocess.TimeoutExpired` or the worker's
+`SshCaptureError`, never retry internally.
+
+Results use the same private atomic publication as pending inputs and become
+visible before the worker removes the input and key. Readers
 therefore see a pending request or complete terminal JSON during publication,
 not a partially written result. A failed result write leaves input and keys
 intact and removes its temporary file; it does not publish partial JSON.

@@ -1,7 +1,8 @@
 """Tests for the poll-and-dispatch worker.
 
-All broker and SSH effects are fakes; no test opens a socket, contacts PVE or
-touches a real host. State lives in a temporary directory.
+Broker/network effects are fakes; local synthetic child processes exercise
+bounded SSH capture. No test opens a socket, contacts PVE or touches a real
+host. State lives in a temporary directory.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import logging
 import ssl
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from subprocess import CompletedProcess
 
@@ -366,7 +368,7 @@ def test_a_repeated_certificate_fetch_is_a_terminal_error(config: WorkerConfig) 
     process_pending_once(broker, config, now=NOW, ssh_runner=ssh)
     result = _result(config)
     assert result["status"] == "error"
-    assert "already been fetched" in result["error"]
+    assert result["error"] == "broker dispatch HTTP 409"
     assert broker.fetched_cert == 1
     assert ssh.calls == []
 
@@ -597,3 +599,139 @@ def test_unusable_status_does_not_stop_processing_other_requests(config, failure
         assert first.exists() and _key_and_cert_exist(config)
         assert not (config.state_dir / "results").exists()
     assert ssh.calls == []
+
+
+@pytest.mark.parametrize("phase", ["status", "lease", "cert"])
+@pytest.mark.parametrize("kind", ["unavailable", "http", "runtime"])
+def test_worker_diagnostics_do_not_echo_exception_details(config, caplog, phase, kind) -> None:
+    marker = "SYNTHETIC_UPSTREAM_DETAIL_DO_NOT_ECHO"
+    detail = f"{marker}: {FAKE_KEY_CONTENT}; {FAKE_CERT}"
+    errors = {
+        "unavailable": BrokerUnavailable(detail),
+        "http": BrokerHTTPError(409, detail),
+        "runtime": RuntimeError(detail),
+    }
+    broker = FakeBroker("approved", **{f"{phase}_error": errors[kind]})
+    input_file = _write_input(config)
+    ssh = ScriptedSsh([])
+    with caplog.at_level(logging.WARNING, logger="privilege_broker.pve.worker"):
+        process_pending_once(broker, config, now=NOW, ssh_runner=ssh)
+    assert marker not in caplog.text
+    assert FAKE_KEY_CONTENT not in caplog.text and FAKE_CERT not in caplog.text
+    assert ssh.calls == []
+    if kind == "unavailable":
+        assert input_file.exists() and _key_and_cert_exist(config)
+        assert not (config.state_dir / "results").exists()
+    else:
+        result = _result(config)
+        assert result["status"] == "error"
+        assert marker not in json.dumps(result)
+        assert FAKE_KEY_CONTENT not in json.dumps(result) and FAKE_CERT not in json.dumps(result)
+        assert len(result["error"]) < 80
+        if kind == "http":
+            assert "409" in result["error"]
+        assert not input_file.exists() and not _key_and_cert_exist(config)
+        # A terminal refusal never triggers a second certificate request.
+        calls = broker.calls
+        process_pending_once(broker, config, now=NOW + 1, ssh_runner=ssh)
+        assert broker.calls == calls
+
+
+def test_local_worker_exception_details_are_not_echoed(config, caplog) -> None:
+    marker = "SYNTHETIC_LOCAL_EXCEPTION_DETAIL"
+    _write_input(config)
+
+    def failing_runner(*args, **kwargs):
+        raise OSError(marker)
+
+    with caplog.at_level(logging.WARNING, logger="privilege_broker.pve.worker"):
+        process_pending_once(FakeBroker("approved"), config, now=NOW, ssh_runner=failing_runner)
+    assert marker not in caplog.text
+    assert _result(config) == {"status": "error", "error": "dispatch failed"}
+
+
+def test_unreadable_input_diagnostics_are_safe(config, monkeypatch, caplog) -> None:
+    input_file = _write_input(config)
+    real_read = Path.read_text
+
+    def fail_input_read(path, *args, **kwargs):
+        if path == input_file:
+            raise OSError("SYNTHETIC_INPUT_READ_DETAIL")
+        return real_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fail_input_read)
+    with caplog.at_level(logging.WARNING, logger="privilege_broker.pve.worker"):
+        process_pending_once(FakeBroker("approved"), config, now=NOW, ssh_runner=ScriptedSsh([]))
+    assert "SYNTHETIC_INPUT_READ_DETAIL" not in caplog.text
+    assert input_file.exists()
+
+
+def test_lifted_dispatcher_fields_are_bounded_scalars(config) -> None:
+    _write_input(config)
+    long_text = "x" * 6000
+    ssh = ScriptedSsh([(0, json.dumps({"lease_id": long_text, "error": long_text, "replayed": {"x": long_text}}))])
+    process_pending_once(FakeBroker("approved"), config, now=NOW, ssh_runner=ssh)
+    result = _result(config)
+    assert len(result["dispatcher_lease_id"]) == 4096
+    assert len(result["dispatcher_error"]) == 4096
+    assert "dispatcher_replayed" not in result
+    assert len(json.dumps(result)) < 16 * 1024
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the default SSH capture adapter uses POSIX pipes")
+@pytest.mark.parametrize("streams", [(1,), (2,), (1, 2)], ids=["stdout", "stderr", "combined"])
+def test_default_worker_aborts_excess_output_without_redispatch(config, monkeypatch, streams) -> None:
+    config = replace(config, ssh_timeout=5)
+    input_file = _write_input(config)
+    marker = config.state_dir / "child-finished"
+    code = (
+        "import os\nfrom pathlib import Path\n"
+        f"for _ in range(256):\n for fd in {streams!r}:\n  os.write(fd, b'x' * 8192)\n"
+        f"Path({str(marker)!r}).write_text('finished')\n"
+    )
+    real_popen = subprocess.Popen
+    children = []
+    targets = []
+
+    def local_child(argv, **kwargs):
+        assert argv[0] == "ssh"
+        targets.append(argv[-1])
+        child = real_popen([sys.executable, "-c", code], **kwargs)
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(subprocess, "Popen", local_child)
+    broker = FakeBroker("approved")
+    process_pending_once(broker, config, now=NOW)
+    result = _result(config)
+    assert result["status"] == "unknown" and "capture limit" in result["error"]
+    assert targets == ["ops@node-a"]
+    assert not marker.exists(), "capture must abort before the large producer completes"
+    assert not input_file.exists() and not _key_and_cert_exist(config)
+    assert len(children) == 1 and children[0].returncode is not None
+    assert all(pipe.closed for pipe in (children[0].stdin, children[0].stdout, children[0].stderr))
+    calls = broker.calls
+    process_pending_once(broker, config, now=NOW + 1)
+    assert broker.calls == calls and len(children) == 1
+
+
+@pytest.mark.parametrize("kind", ["capture", "limit"])
+def test_capture_failures_are_unknown_and_do_not_echo_details(config, caplog, kind) -> None:
+    from privilege_broker.pve._ssh_capture import SshCaptureError, SshOutputLimitExceeded
+
+    marker = "SYNTHETIC_CAPTURE_EXCEPTION_DETAIL"
+    calls = []
+    input_file = _write_input(config)
+
+    def failed_capture(argv, **kwargs):
+        calls.append(argv)
+        error_type = SshOutputLimitExceeded if kind == "limit" else SshCaptureError
+        raise error_type(marker)
+
+    with caplog.at_level(logging.WARNING, logger="privilege_broker.pve.worker"):
+        process_pending_once(FakeBroker("approved"), config, now=NOW, ssh_runner=failed_capture)
+    result = _result(config)
+    assert result["status"] == "unknown" and "remote outcome unknown" in result["error"]
+    assert marker not in caplog.text and marker not in json.dumps(result)
+    assert len(calls) == 1
+    assert not input_file.exists() and not _key_and_cert_exist(config)
