@@ -75,6 +75,22 @@ from .authorization import create_request as broker_create_request
 BROKER_GRANT_TTL_SECONDS = 300  # 5 minutes
 CHALLENGE_TTL_SECONDS = 300
 
+#: Approval lifecycle states stored in ``broker_requests.status``. The
+#: agent-facing status view passes these through unchanged so existing
+#: pollers keep their wire values; any other stored value fails closed.
+APPROVAL_STATES: frozenset[str] = frozenset({"pending", "approved", "denied", "expired", "cancelled"})
+
+#: Execution-outcome vocabulary of the agent-facing status contract: pending,
+#: denied, expired, authorized, executing, succeeded, failed and uncertain
+#: outcomes stay distinguishable. The broker owns only ``not_executed`` until a
+#: trusted executor boundary reports outcomes; approval, lease fetch and
+#: certificate issuance never change it.
+EXECUTION_STATES: frozenset[str] = frozenset({"not_executed", "executing", "succeeded", "failed", "uncertain"})
+
+#: The execution state this broker reports today: no executor exists in this
+#: source yet, so an approval is never presented as an executed operation.
+BROKER_EXECUTION_STATE = "not_executed"
+
 # ---------------------------------------------------------------------------
 # Pydantic models
 # ---------------------------------------------------------------------------
@@ -1050,6 +1066,35 @@ def _html_json_attribute(value: object) -> str:
     return html.escape(json.dumps(value, ensure_ascii=True), quote=True)
 
 
+def _agent_status_view(row: dict[str, Any]) -> dict[str, Any]:
+    """Build the agent-facing status contract for one broker request.
+
+    The view keeps the approval lifecycle (``status``) and the execution
+    outcome (``execution_state``) distinct. The broker holds no execution
+    evidence of its own, so ``execution_state`` is always ``not_executed``
+    until a trusted executor boundary is added; an unknown stored status fails
+    closed instead of leaking an unexpected value to the agent.
+    """
+    status = row["status"]
+    if status not in APPROVAL_STATES:
+        raise ValueError("unknown broker request state")
+    execution_state = BROKER_EXECUTION_STATE
+    if execution_state not in EXECUTION_STATES:
+        raise ValueError("broker execution state is outside the status contract")
+    return {
+        "request_id": row["request_id"],
+        "action": row["action"],
+        "ct_id": row["ct_id"],
+        "reason": row["reason"],
+        "status": status,
+        "execution_state": execution_state,
+        "expires_at": row["expires_at"],
+        "ssh_fingerprint": row["ssh_fingerprint"],
+        "digest": row["digest"],
+        "certificate_fetched": bool(row["certificate_fetched"]),
+    }
+
+
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
@@ -1222,17 +1267,10 @@ def create_broker_app(
             raise _http_error(exc) from exc
         if row["mtls_identity"] != client.identity or row["observed_source_ip"] != client.source_ip:
             raise HTTPException(status_code=403, detail="access denied")
-        return {
-            "request_id": row["request_id"],
-            "action": row["action"],
-            "ct_id": row["ct_id"],
-            "reason": row["reason"],
-            "status": row["status"],
-            "expires_at": row["expires_at"],
-            "ssh_fingerprint": row["ssh_fingerprint"],
-            "digest": row["digest"],
-            "certificate_fetched": bool(row["certificate_fetched"]),
-        }
+        try:
+            return _agent_status_view(row)
+        except ValueError as exc:
+            raise _http_error(exc) from exc
 
     @app.get("/v1/broker/requests/{request_id}/lease")
     @limiter.limit("30/minute")
