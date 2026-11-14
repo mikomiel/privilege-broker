@@ -1,8 +1,9 @@
 # PVE configuration
 
-This pre-release stage supplies authorization, approval and certificate signing,
-not an executor. Deployment, credentials, TLS and consumer cutover remain separate
-operator decisions. No example grants access to a real target.
+This pre-release stage supplies authorization, approval, certificate signing
+and the agent-side bridge and worker, but not the target dispatcher. Deployment,
+credentials, TLS and consumer cutover remain separate operator decisions. No
+example grants access to a real target.
 
 ## Target policy
 
@@ -88,6 +89,102 @@ passkey; denial grants no authority. Protect these URLs against unwanted
 cancellation and metadata disclosure. There is no authenticated generic
 execution-outcome API yet.
 
+## Agent bridge and worker
+
+The bridge and worker are libraries with explicit configuration only. They read
+no environment variable and carry no built-in address, path or identity;
+deployment adapters map their own environment onto these required arguments,
+and a missing value fails closed.
+
+```python
+from pathlib import Path
+from privilege_broker.pve.bridge import ApprovalBridge, BridgeConfig
+from privilege_broker.pve.client import BrokerClient, BrokerClientConfig
+from privilege_broker.pve.worker import WorkerConfig, process_pending_once
+
+client = BrokerClient(
+    BrokerClientConfig(
+        broker_url="https://broker.example.test",  # required https:// URL
+        cert_path="/etc/example/agent-cert.pem",  # required mTLS client certificate
+        key_path="/etc/example/agent-key.pem",  # required mTLS client key
+        ca_path="/etc/example/broker-ca.pem",  # optional trust root
+    )
+)
+bridge = ApprovalBridge(
+    BridgeConfig(
+        state_dir=Path("/var/lib/example-broker"),  # holds input/ results/ keys/
+        public_url="https://broker.example.test",  # approval-page base URL
+        requester="example-agent",  # 1-100 characters
+    )
+)
+worker_config = WorkerConfig(
+    state_dir=Path("/var/lib/example-broker"),
+    targets=("ops@node-a", "ops@node-b"),  # tried in order
+    ssh_port=8922,
+    known_hosts_path="/etc/example/known_hosts",  # pinned host keys
+    poll_interval=5,
+    ssh_timeout=240,
+    expiry_grace=60,
+)
+```
+
+The client connects directly to the configured HTTPS endpoint with environment
+proxies disabled. It rejects every redirect, including same-origin redirects,
+rather than forwarding the mTLS context or accepting a downgrade to HTTP.
+HTTP error bodies are read only up to the detail limit and closed, including
+when a body read fails; producing an error message does not drain the response.
+Interrupted response framing is a transient availability failure. For fixed
+lengths, the client checks `Content-Length` against the body actually read;
+chunked framing remains the transport's responsibility. Invalid lengths and
+declared bodies above the size bound are final unusable responses. If an HTTP
+error status is already known, that status keeps its retry/final classification
+even when the detail stream is truncated. Other HTTP protocol errors and JSON
+decoder failures, including integer-conversion limits, become final unusable
+responses rather than unhandled exceptions that stop the worker.
+
+`bridge.request_mutation(action, ct_id, reason, client)` validates the typed
+action, target and reason. It creates an ephemeral Ed25519 key exclusively
+with mode `0600`, creates the broker request and writes a private temporary
+input file. Only a complete, flushed JSON file is renamed to
+`input/{request_id}.json`, so the worker cannot read a partial publication.
+The method returns the `approval_url`; `bridge.read_status` returns the worker
+result, `pending` or `unknown`.
+
+If creation or publication fails, cleanup removes the key and temporary input
+created by that attempt. An existing key is neither overwritten nor removed.
+Cleanup covers failures that return through Python; process termination or a
+filesystem that refuses deletion can leave files. No orphan-recovery sweeper
+is implemented. Deployers own state-directory protection and recovery.
+
+`known_hosts_path` is the exclusive SSH host-key trust file; the fixed SSH
+options disable global known-host files as well as SSH configuration files.
+
+Run exactly one poller per state directory, including calls to
+`process_pending_once`. No singleton lock or multi-poller coordination is
+implemented. The worker polls `input/` once per
+`process_pending_once(client, worker_config)` call (or forever via `run`).
+A request past its deadline plus `expiry_grace` is
+expired locally without asking the broker, which bounds all retries. Transient
+broker failures (network, timeout, HTTP 429/502/503/504) before dispatch keep
+the request for the next poll. Final status-poll refusals, including HTTP
+401/403/404, finish as `error` and remove the pending input and key rather than
+polling until expiry. Unusable status replies that raise an error are also
+terminal. HTTP 409 after a lost certificate reply ends the request as `error`
+and never requests a second certificate. Dispatch uses fixed non-interactive SSH options
+(`BatchMode`, `IdentitiesOnly`, no TTY, pinned known hosts, configured port) and
+sends `{"action", "ct_id", "lease", "signature"}` on stdin, preserving the
+dispatcher wire contract. A node that does not host the target answers exit 3
+with `not_on_this_node` and the next configured node is tried with the same
+certificate; a transport timeout is `unknown` and is never retried. Results in
+`results/{request_id}.json` are `succeeded`, `failed`, `unknown`, `error`,
+`denied`, `cancelled` or `expired`; key and certificate material never appears
+in results or logs. Results use the same private atomic publication as pending
+inputs and become visible before the worker removes the input and key. Readers
+therefore see a pending request or complete terminal JSON during publication,
+not a partially written result. A failed result write leaves input and keys
+intact and removes its temporary file; it does not publish partial JSON.
+The target dispatcher and its durable claim store remain OpenSpec task 4.2.
+
 ## Certificate source restriction
 
 The library and service require an explicit source restriction:
@@ -106,9 +203,9 @@ The builder only returns argv; the configured service signer invokes local
 `ssh-keygen` with that argv and a timeout. It does not connect to PVE.
 
 A certificate is safe only with the trusted typed dispatcher and lease
-verification on the target. Those execution components are not extracted yet.
-Do not treat certificate issuance as an operation outcome or enable a general
-shell while waiting for the dispatcher.
+verification on the target. The target dispatcher and its claim store are not
+extracted yet (OpenSpec task 4.2). Do not treat certificate issuance as an
+operation outcome or enable a general shell while waiting for the dispatcher.
 
 ## Operator notifications
 
