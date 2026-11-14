@@ -8,11 +8,12 @@ Human-approved typed operations for AI agents, with Proxmox VE as the first inte
 For operators who want agents to request bounded actions without receiving a
 general shell or infrastructure-wide credentials.
 
-**Status: pre-release PVE approval service.** The package now includes a
-SQLite-backed WebAuthn service, passkey UI, server-owned Discord notifications
-and restricted SSH certificate signing. It has no agent bridge, execution
-worker, typed dispatcher or execution-outcome API yet. No existing deployment
-has switched to it, and no product release has been published.
+**Status: pre-release PVE extraction.** The package includes a SQLite-backed
+WebAuthn service, passkey UI, server-owned Discord notifications, restricted
+SSH certificate signing, and the agent-side bridge, client and worker. The
+target dispatcher, durable replay store and generic execution-outcome API are
+not included yet. No existing deployment has switched to it, and no product
+release has been published.
 
 The extracted source can:
 
@@ -22,6 +23,8 @@ The extracted source can:
 - Require a real passkey ceremony before releasing authorization to the same authenticated agent.
 - Sign a one-time-fetch SSH certificate with fixed principal, dispatcher and explicit source restriction.
 - Notify an operator without treating delivery or approval as execution success.
+- Create agent-side requests with private ephemeral keys and atomic pending-file publication.
+- Poll approvals and classify SSH dispatcher outcomes without treating approval as execution.
 
 ## Try the local example
 
