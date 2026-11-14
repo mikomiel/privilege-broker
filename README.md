@@ -24,7 +24,7 @@ The extracted source can:
 - Sign a one-time-fetch SSH certificate with fixed principal, dispatcher and explicit source restriction.
 - Notify an operator without treating delivery or approval as execution success.
 - Create agent-side requests with private ephemeral keys and atomic pending-file publication.
-- Poll approvals and classify SSH dispatcher outcomes without treating approval as execution.
+- Poll approvals with safe error summaries and bounded SSH capture, without treating approval as execution.
 
 ## Try the local example
 

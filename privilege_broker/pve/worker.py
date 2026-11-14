@@ -11,7 +11,7 @@ Terminal result statuses written to ``results/{request_id}.json``::
 
     succeeded  dispatcher exited 0
     failed     dispatcher exited non-zero
-    unknown    ssh timed out; the operation may or may not have run
+    unknown    SSH timed out or capture aborted; execution may have happened
     error      the dispatch could not be carried out at all
     denied | cancelled | expired   decided at the broker, never dispatched
 
@@ -46,6 +46,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from ._ssh_capture import SshCaptureError, SshOutputLimitExceeded, run_ssh
 from ._state import write_state_json
 from .client import BrokerClient, BrokerHTTPError, BrokerUnavailable
 
@@ -53,7 +54,7 @@ _LOG = logging.getLogger("privilege_broker.pve.worker")
 
 #: The dispatcher's exit code when the container is not on the node reached.
 NOT_ON_THIS_NODE_EXIT = 3
-#: Truncation applied to captured dispatcher output in a result.
+#: Character limit for stored stdout/stderr excerpts and lifted dispatcher strings.
 _OUTPUT_LIMIT = 4096
 #: SSH connect timeout; the overall dispatch timeout is ``WorkerConfig.ssh_timeout``.
 _CONNECT_TIMEOUT = 10
@@ -63,7 +64,11 @@ TERMINAL_BROKER_STATUSES: frozenset[str] = frozenset({"denied", "cancelled", "ex
 
 
 class SshRunner(Protocol):
-    """Runs one SSH invocation; injectable so tests never open a socket."""
+    """Runs one SSH invocation; injectable without changing dispatcher inputs.
+
+    Custom runners own bounded capture and must signal ambiguous aborts with
+    TimeoutExpired or SshCaptureError, not retry the invocation themselves.
+    """
 
     def __call__(
         self,
@@ -119,11 +124,27 @@ def _dispatcher_outcome(stdout: str) -> dict[str, Any]:
     """
     try:
         parsed = json.loads(stdout)
-    except (json.JSONDecodeError, ValueError):
+    except (ValueError, RecursionError):
         return {}
     if not isinstance(parsed, dict):
         return {}
-    return {f"dispatcher_{key}": parsed[key] for key in ("lease_id", "replayed", "error") if key in parsed}
+    outcome: dict[str, Any] = {
+        f"dispatcher_{key}": parsed[key][:_OUTPUT_LIMIT]
+        for key in ("lease_id", "error")
+        if isinstance(parsed.get(key), str)
+    }
+    if isinstance(parsed.get("replayed"), bool):
+        outcome["dispatcher_replayed"] = parsed["replayed"]
+    return outcome
+
+
+def _failure_summary(exc: Exception, phase: str) -> str:
+    """Use known phase/status classifications, never upstream exception text."""
+    if isinstance(exc, BrokerHTTPError):
+        return f"broker {phase} HTTP {exc.status}"
+    if isinstance(exc, BrokerUnavailable):
+        return f"broker {phase} unavailable"
+    return "broker status response unusable" if phase == "status" else "dispatch failed"
 
 
 def dispatch(
@@ -216,6 +237,10 @@ def dispatch(
                 "node": target,
                 "error": f"ssh dispatch exceeded {config.ssh_timeout}s; remote outcome unknown",
             }
+        except SshCaptureError as exc:
+            reason = "ssh capture limit exceeded" if isinstance(exc, SshOutputLimitExceeded) else "ssh capture failed"
+            _LOG.warning("request %s: %s via %s; remote outcome unknown", request_id, reason, target)
+            return {"status": "unknown", "node": target, "error": f"{reason}; remote outcome unknown"}
         outcome = _dispatcher_outcome(result.stdout)
         _LOG.info("request %s: %s exited %s", request_id, target, result.returncode)
         # Exit 3 alone is not enough: the dispatcher passes pct's own exit code
@@ -263,7 +288,7 @@ def process_pending_once(
 ) -> None:
     """Process every pending input file once."""
     log = logger or _LOG
-    runner: SshRunner = ssh_runner or subprocess.run
+    runner: SshRunner = ssh_runner or run_ssh
     now = int(time.time()) if now is None else now
     input_dir = config.state_dir / "input"
     results_dir = config.state_dir / "results"
@@ -277,8 +302,8 @@ def process_pending_once(
             continue
         try:
             input_data = json.loads(input_file.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
-            log.warning("request %s: unreadable input file: %s", request_id, exc)
+        except (ValueError, OSError):
+            log.warning("request %s: unreadable input file", request_id)
             continue
         if not isinstance(input_data, dict):
             log.warning("request %s: input file is not an object", request_id)
@@ -292,16 +317,12 @@ def process_pending_once(
             status_resp = client.request("GET", f"/v1/broker/requests/{request_id}")
         except BrokerUnavailable as exc:
             # Only classified availability failures are safe to retry.
-            log.warning("request %s: broker status unavailable: %s", request_id, exc)
+            log.warning("request %s: %s", request_id, _failure_summary(exc, "status"))
             continue
         except (RuntimeError, OSError) as exc:
             # Do not retry final refusals or unusable replies, and do not
             # copy the broker's response body into results or logs.
-            error = (
-                f"broker status HTTP {exc.status}"
-                if isinstance(exc, BrokerHTTPError)
-                else "broker status response unusable"
-            )
+            error = _failure_summary(exc, "status")
             log.warning("request %s: %s", request_id, error)
             _finish(config, request_id, input_file, key_id, {"status": "error", "error": error}, log)
             continue
@@ -315,14 +336,15 @@ def process_pending_once(
             except BrokerUnavailable as exc:
                 # Raised only by the lease and certificate calls, before any
                 # SSH: nothing ran, so the input and key stay for the next poll.
-                log.warning("request %s: broker unavailable before dispatch, will retry: %s", request_id, exc)
+                log.warning("request %s: %s; will retry", request_id, _failure_summary(exc, "dispatch"))
                 continue
             except Exception as exc:
                 # Fail closed: a consumed certificate (HTTP 409 "already
                 # fetched") ends the request as an error; no replacement
                 # authority is minted and no operation is repeated.
-                log.warning("request %s: dispatch failed: %s", request_id, exc)
-                result = {"status": "error", "error": str(exc)}
+                error = _failure_summary(exc, "dispatch")
+                log.warning("request %s: %s", request_id, error)
+                result = {"status": "error", "error": error}
             _finish(config, request_id, input_file, key_id, result, log)
         elif status in TERMINAL_BROKER_STATUSES:
             _finish(config, request_id, input_file, key_id, {"status": status}, log)

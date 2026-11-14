@@ -33,9 +33,13 @@ missing value fails closed. The worker keeps the broker wire contract
 unchanged: the lease is fetched once, the certificate is fetched once and the
 dispatcher receives `{"action", "ct_id", "lease", "signature"}` on stdin over
 fixed non-interactive SSH options. Terminal results are `succeeded`, `failed`,
-`unknown` (transport timeout; never retried), `error`, `denied`, `cancelled`
-and `expired`. Key and certificate material never appears in results or logs,
-and a consumed certificate is never re-requested.
+`unknown` (transport timeout or capture abort; never retried), `error`,
+`denied`, `cancelled` and `expired`. Worker-generated error summaries use known
+phase/status classifications, not raw upstream exception details. The default
+POSIX SSH adapter bounds capture while reading, and stored output excerpts
+and lifted dispatcher strings have separate limits. Executor output is still
+operational data and must not contain credentials. A consumed certificate is
+never re-requested.
 
 The client rejects redirects instead of carrying its mTLS context outside the
 configured endpoint. The bridge and worker share private atomic publication
