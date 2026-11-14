@@ -49,6 +49,8 @@ git diff --check
 
 ## Working contract
 
+- Follow the issue-first tracking and PR-link rules in
+  [CONTRIBUTING.md](CONTRIBUTING.md) for every repository change.
 - Use a task branch and one pull request to `main`. Keep one writer per
   branch and worktree. Preserve unrelated work.
 - Do not rewrite published history. Branch protection refuses a force-push.
