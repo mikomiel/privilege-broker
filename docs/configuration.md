@@ -213,6 +213,50 @@ not a partially written result. A failed result write leaves input and keys
 intact and removes its temporary file; it does not publish partial JSON.
 The target dispatcher and its durable claim store remain OpenSpec task 4.2.
 
+## Target dispatcher
+
+The target-side dispatcher runs on the PVE node and is reached only through the
+restricted SSH certificate. It takes every path explicitly; there is no built-in
+deployment path and no environment read:
+
+```python
+from pathlib import Path
+from privilege_broker.pve.dispatcher import DispatchConfig, dispatch, parse_request
+
+config = DispatchConfig(
+    policy_path=Path("/etc/example-dispatcher/policy.json"),  # same version 2 policy as the broker
+    lease_public_key_path=Path("/etc/ssh/example-lease.pub"),  # Ed25519 lease signer key
+    claim_db_path=Path("/var/lib/example-dispatcher/claims.sqlite3"),  # deployer-protected
+    lxc_conf_dir=Path("/etc/pve/lxc"),  # lists only this node's containers
+    command_timeout=180,  # keep the worker ssh_timeout above this
+)
+request = parse_request(stdin_document)
+exit_code, output = dispatch(request, config, public_key=key, now=int(time.time()))
+```
+
+As a command, `python -m privilege_broker.pve.dispatcher` requires `--policy`,
+`--lease-public-key`, `--claim-db` and `--lxc-conf-dir`, and reads one request
+from stdin. It prints one JSON document and exits with the operation's exit code,
+`1` for a refusal or `3` for `not_on_this_node`.
+
+The dispatcher enforces, in order: request shape, lease structure, audience,
+profile, `max_dispatches == 1`, signature, the current target policy, the lease
+TTL, the execution digest rebuilt from the actual action and container, action
+and target scope, and container locality. Only then does it claim the lease and
+run one fixed argv through `sudo pct` with `shell=False`. No caller input reaches
+the command line except the validated positive container ID and, for a snapshot,
+a name derived from the lease UUID.
+
+The claim store is a SQLite WAL database with its parent at mode `0700` and the
+file at `0600` where the filesystem permits. It is created by the dispatcher
+identity; never open it with `sudo` or as root. A terminal claim is replayed from
+storage, a claim left `CLAIMED` by a dead process becomes `UNKNOWN`, and a stored
+claim whose action or target differs from the presented request is refused as
+`UNKNOWN`. Truncated output is stored at 4096 bytes per stream.
+
+`ct.snapshot_prune` is refused before any claim until OpenSpec task 4.3 lands, so
+a broker-approved prune fails closed rather than running unpreserved logic.
+
 ## Certificate source restriction
 
 The library and service require an explicit source restriction:

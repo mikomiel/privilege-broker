@@ -13,6 +13,7 @@ Notification delivery is separate and never an authorization decision.
 - `privilege_broker.pve.client`: mTLS broker HTTP client; the endpoint and trust material are explicit constructor input and transient failures classify separately from final refusals.
 - `privilege_broker.pve.bridge`: agent-side request creation with an ephemeral Ed25519 key, strict response validation and pending-input publication.
 - `privilege_broker.pve.worker`: poll-and-dispatch worker that fetches the lease and the one-time certificate, tries the configured nodes in order and writes terminal result files.
+- `privilege_broker.pve.dispatcher`: target-side typed dispatcher that re-verifies the lease and target policy, atomically claims it in a durable SQLite store and runs one fixed argv.
 
 The approval service requires explicitly supplied store, signer and target
 policy. Its environment factory requires private deployment configuration;
@@ -23,9 +24,9 @@ and service isolation are owned by deployment, not by request bodies.
 Browser approval signs a short-lived PVE lease but returns only approval
 status. The bound agent can fetch that lease and a restricted SSH certificate.
 The signer runs only local `ssh-keygen`, not an SSH connection or PVE command.
-The bridge and worker exist; the target dispatcher, durable claim store and
-outcome ingestion do not (OpenSpec tasks 4.2 and 5.1). An `approved` request
-is not an executed operation.
+The bridge, client, worker and dispatcher exist. The generic execution-outcome
+API and policy-bounded snapshot pruning do not (OpenSpec tasks 4.3 and 5.1).
+An `approved` request is not an executed operation.
 
 The bridge, client and worker take explicit configuration only: they read no
 environment variable and carry no built-in address, path or identity, so a
@@ -99,8 +100,19 @@ delivery is not durable. Product acceptance remains incomplete.
 
 ## Remaining product stages
 
+The dispatcher is the authoritative target-side boundary. It re-verifies the
+lease signature, audience, profile, TTL, execution digest and scope, then
+re-reads the same version 2 policy the broker used. Only then does it check
+container locality, so a wrong node answers `not_on_this_node` (exit 3) before
+touching the claim store and the worker may present the same lease to the next
+node. It then claims the lease with an atomic `INSERT OR IGNORE` before running
+one fixed argv through `sudo pct`, never a shell. A repeat presentation returns
+the stored result with `replayed`; a claim left `CLAIMED` by a dead process
+becomes `UNKNOWN` and is never re-executed. `ct.snapshot_prune` is refused
+before any claim until task 4.3 implements it.
+
 The active [OpenSpec change](../openspec/changes/extract-pve-foundation/proposal.md)
-owns the target dispatcher and replay store, the outcome interfaces and
+owns the remaining dispatcher pruning work, the outcome interfaces and
 end-to-end acceptance. Consumer pinning, deployment and live
 PVE acceptance are separate gates. No current consumer has switched.
 

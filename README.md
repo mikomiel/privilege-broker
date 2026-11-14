@@ -10,10 +10,11 @@ general shell or infrastructure-wide credentials.
 
 **Status: pre-release PVE extraction.** The package includes a SQLite-backed
 WebAuthn service, passkey UI, server-owned Discord notifications, restricted
-SSH certificate signing, and the agent-side bridge, client and worker. The
-target dispatcher, durable replay store and generic execution-outcome API are
-not included yet. No existing deployment has switched to it, and no product
-release has been published.
+SSH certificate signing, the agent-side bridge, client and worker, and the
+target-side typed dispatcher with a durable SQLite claim store. The generic
+execution-outcome API and policy-bounded snapshot pruning are not included yet.
+No existing deployment has switched to it, and no product release has been
+published.
 
 The extracted source can:
 
@@ -25,6 +26,7 @@ The extracted source can:
 - Notify an operator without treating delivery or approval as execution success.
 - Create agent-side requests with private ephemeral keys and atomic pending-file publication.
 - Poll approvals with safe error summaries and bounded SSH capture, without treating approval as execution.
+- Dispatch on the target node through a fixed-argv typed dispatcher that claims each lease once in a durable SQLite store.
 
 ## Try the local example
 
