@@ -6,12 +6,12 @@
 # The release pull request always changes a sensitive path (pyproject.toml, this
 # configuration or the manifest), so scripts/pr_policy.py never auto-merges it.
 #
-# The push trigger alone is not enough: ordinary changes are merged by
-# `automerge` with the default GITHUB_TOKEN, and GitHub suppresses the
-# push-triggered workflows for it. The `workflow_run` trigger observes the
-# completion of that trusted default-branch automation instead, and the
-# `if` guard keeps it to the default branch. `workflow_dispatch` is the manual
-# reconciliation path.
+# `automerge` calls this workflow when its own run landed a pull request, so a
+# sweep or a review pass that merges nothing costs no release run. `push` keeps
+# the path for a merge performed with a token that does create push events, and
+# `workflow_dispatch` is the manual reconciliation path. `workflow_run` is not a
+# trigger here: it fires on every completion of the automation, whether or not
+# that run merged anything.
 #
 # Never restore `skip-github-release`. Release-please flips a merged release
 # pull request from `autorelease: pending` to `autorelease: tagged` only in the
@@ -31,9 +31,7 @@ name: release-please
 on:
   push:
     branches: [main]
-  workflow_run:
-    workflows: [automerge]
-    types: [completed]
+  workflow_call:
   workflow_dispatch:
 
 permissions:
@@ -49,9 +47,6 @@ concurrency:
 
 jobs:
   release-please:
-    if: >-
-      github.event_name != 'workflow_run'
-      || github.event.workflow_run.head_branch == 'main'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
