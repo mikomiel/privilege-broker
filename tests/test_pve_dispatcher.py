@@ -36,6 +36,9 @@ from privilege_broker.pve.dispatcher import (
     read_request,
     verify_lease,
 )
+from privilege_broker.pve.dispatcher import (
+    local_epochs as dispatcher_local_epochs,
+)
 from privilege_broker.pve.worker import WorkerConfig, process_pending_once
 
 NOW = 1_800_000_000
@@ -1072,6 +1075,55 @@ def test_prune_timeout_response_is_bounded(config, private_key) -> None:
     assert len(output["kept_over_limit"]) == 256
     assert output["kept_over_limit_omitted"] == 3000 - 1 - 256
     assert output["report_truncated"] is True
+
+
+def _berlin_transition_epochs() -> tuple[float, float] | None:
+    if not hasattr(time, "tzset"):
+        return None
+    saved = os.environ.get("TZ")
+    os.environ["TZ"] = "Europe/Berlin"
+    time.tzset()
+    try:
+        epochs = sorted(dispatcher_local_epochs("2026-10-25 02:30:00"))
+    finally:
+        if saved is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = saved
+        time.tzset()
+    if len(epochs) != 2:
+        return None
+    return epochs[0], epochs[1]
+
+
+def test_repeated_local_hour_has_two_epochs() -> None:
+    pair = _berlin_transition_epochs()
+    if pair is None:
+        pytest.skip("a DST timezone database with the Berlin transition is unavailable")
+    earlier, later = pair
+    assert later - earlier == 3600
+
+
+def test_prune_retains_a_snapshot_inside_retention_across_a_repeated_hour(config, private_key) -> None:
+    pair = _berlin_transition_epochs()
+    if pair is None:
+        pytest.skip("a DST timezone database with the Berlin transition is unavailable")
+    earlier, later = pair
+    config = replace(config, command_timeout=180)
+    config.policy_path.write_text(
+        json.dumps({"version": 2, "grants": {"ct.snapshot_prune": [CT_ID]}, "snapshot_retention_days": 1}),
+        encoding="utf-8",
+    )
+    # The cutoff sits between the two readings, so only the earlier one is "old".
+    now = int(later + 86400 - 1800)
+    listing = _snapshot_listing([("broker-aaaaaaaaaaaa", earlier)])
+    runner = Runner([CompletedProcess([], 0, listing, "")])
+    request = _request_json(private_key, "ct.snapshot_prune", issued_at=now - 60, expires_at=now + 60)
+    exit_code, output = _run(config, private_key, request, runner, now=now)
+    assert exit_code == 0
+    assert output["deleted"] == []
+    assert output["kept"] == ["broker-aaaaaaaaaaaa"]
+    assert len(runner.calls) == 1
 
 
 def test_verify_lease_returns_claims(private_key) -> None:

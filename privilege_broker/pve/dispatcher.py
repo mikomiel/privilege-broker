@@ -489,22 +489,47 @@ class ClaimStore:
         return dict(row) if row else None
 
 
-def parse_snapshots(listing: str) -> list[tuple[str, float]]:
-    """Return (name, snaptime) for every dated entry of *listing*.
+def local_epochs(stamp: str) -> list[float]:
+    """Return every valid epoch for a local timestamp printed by ``pct``.
 
-    The time is node-local, as ``pct`` prints it. A line that does not parse,
-    ``current`` included, is skipped and can never become a delete candidate.
+    ``pct`` prints node-local time without an offset. During a daylight-saving
+    transition one printed time can occur twice, so both readings are returned
+    and the caller keeps the snapshot unless every reading is old enough.
+    """
+    try:
+        parsed = time.strptime(stamp, "%Y-%m-%d %H:%M:%S")
+    except (ValueError, OverflowError):
+        return []
+    fields = tuple(parsed[:8])
+    found: list[float] = []
+    for isdst in (0, 1):
+        try:
+            candidate = time.mktime(fields + (isdst,))
+        except (OverflowError, OSError, ValueError):
+            continue
+        if time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(candidate)) != stamp:
+            continue
+        if candidate not in found:
+            found.append(candidate)
+    return found
+
+
+def parse_snapshots(listing: str) -> list[tuple[str, float]]:
+    """Return (name, newest possible snaptime) for every dated entry.
+
+    The newest valid reading is used, so an ambiguous local time is never
+    treated as older than it may be. A line that does not parse, ``current``
+    included, is skipped and can never become a delete candidate.
     """
     found: list[tuple[str, float]] = []
     for line in listing.splitlines():
         match = _SNAPSHOT_LINE_RE.match(line)
         if match is None:
             continue
-        try:
-            snaptime = time.mktime(time.strptime(match.group(2), "%Y-%m-%d %H:%M:%S"))
-        except (ValueError, OverflowError):
+        epochs = local_epochs(match.group(2))
+        if not epochs:
             continue
-        found.append((match.group(1), snaptime))
+        found.append((match.group(1), max(epochs)))
     return found
 
 

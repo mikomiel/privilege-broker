@@ -16,7 +16,7 @@ files and malformed policy fail. An absent grant denies the operation.
 
 The closed operation set is container start, stop, reboot, shutdown, snapshot
 and broker-snapshot pruning. Policy can narrow this set, not add actions. The
-future dispatcher must enforce retention against broker-owned snapshots.
+dispatcher enforces retention against broker-owned snapshots.
 
 ## Approval service
 
