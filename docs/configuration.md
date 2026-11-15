@@ -1,9 +1,11 @@
 # PVE configuration
 
-This pre-release stage supplies authorization, approval, certificate signing
-and the agent-side bridge and worker, but not the target dispatcher. Deployment,
-credentials, TLS and consumer cutover remain separate operator decisions. No
-example grants access to a real target.
+This pre-release stage supplies authorization, approval, certificate signing,
+the agent-side bridge and worker, and the target-side dispatcher with its
+durable claim store. Policy-bounded snapshot pruning and the generic
+execution-outcome API are not included yet. Deployment, credentials, TLS and
+consumer cutover remain separate operator decisions. No example grants access
+to a real target.
 
 ## Target policy
 
@@ -211,7 +213,59 @@ visible before the worker removes the input and key. Readers
 therefore see a pending request or complete terminal JSON during publication,
 not a partially written result. A failed result write leaves input and keys
 intact and removes its temporary file; it does not publish partial JSON.
-The target dispatcher and its durable claim store remain OpenSpec task 4.2.
+The target dispatcher and its claim store are included. Policy-bounded snapshot
+pruning remains OpenSpec task 4.3 and the generic outcome API task 5.1.
+
+## Target dispatcher
+
+The target-side dispatcher runs on the PVE node and is reached only through the
+restricted SSH certificate. It takes every path explicitly; there is no built-in
+deployment path and no environment read:
+
+```python
+from pathlib import Path
+from privilege_broker.pve.dispatcher import DispatchConfig, dispatch, parse_request
+
+config = DispatchConfig(
+    policy_path=Path("/etc/example-dispatcher/policy.json"),  # same version 2 policy as the broker
+    lease_public_key_path=Path("/etc/ssh/example-lease.pub"),  # Ed25519 lease signer key
+    claim_db_path=Path("/var/lib/example-dispatcher/claims.sqlite3"),  # deployer-protected
+    lxc_conf_dir=Path("/etc/pve/lxc"),  # lists only this node's containers
+    command_timeout=180,  # keep the worker ssh_timeout above this
+)
+request = parse_request(stdin_document)
+exit_code, output = dispatch(request, config, public_key=key, now=int(time.time()))
+```
+
+As a command, `python -m privilege_broker.pve.dispatcher` requires `--policy`,
+`--lease-public-key`, `--claim-db` and `--lxc-conf-dir`, and reads one request
+from stdin. That read is bounded to 64 KiB and 10 seconds, so a caller cannot
+stream input, withhold EOF or grow the process before authorization runs. It prints one JSON document and exits with the operation's exit code,
+`1` for a refusal or `3` for `not_on_this_node`.
+
+The dispatcher enforces, in order: request shape, lease structure, audience,
+profile, `max_dispatches == 1`, signature, the current target policy, the lease
+TTL, the execution digest rebuilt from the actual action and container, action
+and target scope, and container locality. Only then does it claim the lease and
+run one fixed argv through `sudo pct` with `shell=False`. No caller input reaches
+the command line except the validated positive container ID and, for a snapshot,
+a name derived from the lease UUID.
+
+The claim store is a SQLite WAL database with its parent at mode `0700` and the
+file at `0600` where the filesystem permits. That mode is applied when the
+dispatcher creates the directory: an existing parent keeps whatever mode it
+already has, and the deployer must verify it. It is created by the dispatcher
+identity; never open it with `sudo` or as root. A terminal claim is replayed from
+storage, a claim left `CLAIMED` by a dead process becomes `UNKNOWN`, and a stored
+claim whose action or target differs from the presented request is refused as
+`UNKNOWN`. Truncated output is stored at 4096 bytes per stream.
+
+At-most-once dispatch is bound to one host: run exactly one eligible executor
+per target for the lease lifetime, and never place the SQLite database on a
+network filesystem. A target that can move to another dispatcher inside that
+lifetime is out of scope until broker-side executor binding exists.
+`ct.snapshot_prune` is refused before any claim until OpenSpec task 4.3 lands, so
+a broker-approved prune fails closed rather than running unpreserved logic.
 
 ## Certificate source restriction
 
@@ -231,9 +285,10 @@ The builder only returns argv; the configured service signer invokes local
 `ssh-keygen` with that argv and a timeout. It does not connect to PVE.
 
 A certificate is safe only with the trusted typed dispatcher and lease
-verification on the target. The target dispatcher and its claim store are not
-extracted yet (OpenSpec task 4.2). Do not treat certificate issuance as an
-operation outcome or enable a general shell while waiting for the dispatcher.
+verification on the target. The extracted dispatcher performs that verification
+and enforces the same policy before it claims the lease; snapshot pruning is
+still OpenSpec task 4.3. Do not treat certificate issuance as an operation
+outcome, and never enable a general shell as a substitute for the dispatcher.
 
 ## Operator notifications
 

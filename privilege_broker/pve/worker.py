@@ -135,6 +135,8 @@ def _dispatcher_outcome(stdout: str) -> dict[str, Any]:
     }
     if isinstance(parsed.get("replayed"), bool):
         outcome["dispatcher_replayed"] = parsed["replayed"]
+    if parsed.get("outcome") == "unknown":
+        outcome["dispatcher_outcome"] = "unknown"
     return outcome
 
 
@@ -247,6 +249,17 @@ def dispatch(
         # through, and only its JSON marks the node as the wrong one.
         if result.returncode == NOT_ON_THIS_NODE_EXIT and outcome.get("dispatcher_error") == "not_on_this_node":
             continue
+        if outcome.get("dispatcher_outcome") == "unknown":
+            # The dispatcher reported that the operation may have run. Keep that
+            # uncertainty: no failover and no redispatch.
+            return {
+                "status": "unknown",
+                "node": target,
+                "exit_code": result.returncode,
+                "stdout": result.stdout[:_OUTPUT_LIMIT],
+                "stderr": result.stderr[:_OUTPUT_LIMIT],
+                **outcome,
+            }
         return {
             # Classify from the dispatcher's exit code, not from "command attempted".
             "status": "succeeded" if result.returncode == 0 else "failed",
