@@ -2,8 +2,8 @@
 
 This pre-release stage supplies authorization, approval, certificate signing,
 the agent-side bridge and worker, and the target-side dispatcher with its
-durable claim store. Policy-bounded snapshot pruning and the generic
-execution-outcome API are not included yet. Deployment, credentials, TLS and
+durable claim store and policy-bounded snapshot pruning. The generic
+execution-outcome API is not included yet. Deployment, credentials, TLS and
 consumer cutover remain separate operator decisions. No example grants access
 to a real target.
 
@@ -16,7 +16,7 @@ files and malformed policy fail. An absent grant denies the operation.
 
 The closed operation set is container start, stop, reboot, shutdown, snapshot
 and broker-snapshot pruning. Policy can narrow this set, not add actions. The
-future dispatcher must enforce retention against broker-owned snapshots.
+dispatcher enforces retention against broker-owned snapshots.
 
 ## Approval service
 
@@ -214,7 +214,7 @@ therefore see a pending request or complete terminal JSON during publication,
 not a partially written result. A failed result write leaves input and keys
 intact and removes its temporary file; it does not publish partial JSON.
 The target dispatcher and its claim store are included. Policy-bounded snapshot
-pruning remains OpenSpec task 4.3 and the generic outcome API task 5.1.
+pruning is included with the dispatcher; the generic outcome API remains OpenSpec task 5.1.
 
 ## Target dispatcher
 
@@ -264,8 +264,15 @@ At-most-once dispatch is bound to one host: run exactly one eligible executor
 per target for the lease lifetime, and never place the SQLite database on a
 network filesystem. A target that can move to another dispatcher inside that
 lifetime is out of scope until broker-side executor binding exists.
-`ct.snapshot_prune` is refused before any claim until OpenSpec task 4.3 lands, so
-a broker-approved prune fails closed rather than running unpreserved logic.
+
+`ct.snapshot_prune` is the one action with no fixed argv: it lists the
+container's snapshots and deletes only broker-owned `broker-*` snapshots older
+than the policy's `snapshot_retention_days`. Retention never comes from the
+request, unrelated snapshots are never candidates, and every `pct` call shares
+one `command_timeout` budget. The report carries `deleted`, `kept`, `failed` and
+`kept_over_limit`; a failed delete makes the exit code non-zero, and a delete
+that times out may still complete, so it is reported as an unknown outcome. The
+approval page states the retention the policy will apply.
 
 ## Certificate source restriction
 
@@ -287,7 +294,7 @@ The builder only returns argv; the configured service signer invokes local
 A certificate is safe only with the trusted typed dispatcher and lease
 verification on the target. The extracted dispatcher performs that verification
 and enforces the same policy before it claims the lease; snapshot pruning is
-still OpenSpec task 4.3. Do not treat certificate issuance as an operation
+enforced by the extracted dispatcher. Do not treat certificate issuance as an operation
 outcome, and never enable a general shell as a substitute for the dispatcher.
 
 ## Operator notifications
