@@ -89,6 +89,7 @@ diff and can reproduce its behaviour. Participation follows
 ## Licence and releases
 
 Contributions are accepted under AGPL-3.0-only. Confirm that you have the right
-to submit them. Release-please owns version and changelog updates; see
-[the release process](docs/releases.md). Tags, packages, images and deployment
+to submit them. Release-please owns the version, the changelog, the tag and the
+GitHub Release; merging a release pull request publishes them. See
+[the release process](docs/releases.md). Packages, images and deployment
 remain separate maintainer decisions.

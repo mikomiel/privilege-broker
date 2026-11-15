@@ -14,8 +14,8 @@ SSH certificate signing, the agent-side bridge, client and worker, and the
 target-side typed dispatcher with a durable SQLite claim store and
 policy-bounded snapshot pruning. The generic execution-outcome API is not
 included yet.
-No existing deployment has switched to it, and no product release has been
-published.
+No existing deployment has switched to it. A tagged source version is a
+release, not a supported deployment.
 
 The extracted source can:
 
