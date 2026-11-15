@@ -11,17 +11,24 @@ or real credential is used.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
+import secrets
 import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+import cbor2
 import pytest
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat
 from fastapi.testclient import TestClient
@@ -64,16 +71,50 @@ class Extractor:
         return self._client
 
 
-class Verifier:
-    def verify(self, credential: dict[str, Any], challenge: bytes, passkey: svc.BrokerPasskey):
-        if credential.get("proof") != "verified":
-            raise ValueError("verification failed")
-        return passkey.operator, passkey.sign_count + 1
+class SoftwareAuthenticator:
+    """A real software WebAuthn authenticator: P-256 key, signed assertions."""
 
+    def __init__(self) -> None:
+        self.key = ec.generate_private_key(ec.SECP256R1())
+        self.credential_id = secrets.token_bytes(32)
 
-class RegistrationVerifier:
-    def verify(self, credential: dict[str, Any], challenge: bytes):
-        return svc.RegistrationResult("new-credential", b"new-public-key", 1)
+    def credential(
+        self, challenge: str, *, registration: bool = False, uv: bool = True, up: bool = True, count: int = 1
+    ) -> dict[str, Any]:
+        client_data = json.dumps(
+            {
+                "type": "webauthn.create" if registration else "webauthn.get",
+                "challenge": challenge,
+                "origin": "https://broker.example.test",
+                "crossOrigin": False,
+            },
+            separators=(",", ":"),
+        ).encode()
+        flags = int(up) | (0x04 if uv else 0) | (0x40 if registration else 0)
+        auth_data = hashlib.sha256(b"broker.example.test").digest() + bytes([flags]) + count.to_bytes(4, "big")
+        response: dict[str, Any] = {"clientDataJSON": base64.urlsafe_b64encode(client_data).rstrip(b"=").decode()}
+        if registration:
+            numbers = self.key.public_key().public_numbers()
+            cose = cbor2.dumps(
+                {1: 2, 3: -7, -1: 1, -2: numbers.x.to_bytes(32, "big"), -3: numbers.y.to_bytes(32, "big")}
+            )
+            auth_data += bytes(16) + len(self.credential_id).to_bytes(2, "big") + self.credential_id + cose
+            response["attestationObject"] = (
+                base64.urlsafe_b64encode(cbor2.dumps({"fmt": "none", "authData": auth_data, "attStmt": {}}))
+                .rstrip(b"=")
+                .decode()
+            )
+        else:
+            response["authenticatorData"] = base64.urlsafe_b64encode(auth_data).rstrip(b"=").decode()
+            response["signature"] = (
+                base64.urlsafe_b64encode(
+                    self.key.sign(auth_data + hashlib.sha256(client_data).digest(), ec.ECDSA(hashes.SHA256()))
+                )
+                .rstrip(b"=")
+                .decode()
+            )
+        encoded_id = base64.urlsafe_b64encode(self.credential_id).rstrip(b"=").decode()
+        return {"id": encoded_id, "rawId": encoded_id, "type": "public-key", "response": response}
 
 
 class AsgiBrokerClient:
@@ -99,12 +140,14 @@ class DispatcherSsh:
         self._env = env
         self._tamper = tamper
         self.calls = 0
+        self.payloads: list[str] = []
 
     def __call__(self, argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         self.calls += 1
         payload = kwargs["input"]
         if self._tamper is not None:
             payload = self._tamper(payload)
+        self.payloads.append(payload)
         environment = dict(os.environ)
         if self._env:
             environment.update(self._env)
@@ -137,6 +180,10 @@ class DispatcherSsh:
         )
         return subprocess.CompletedProcess(argv, result.returncode, result.stdout, result.stderr)
 
+    def replay(self, index: int = 0) -> subprocess.CompletedProcess[str]:
+        """Present the same payload to another fresh dispatcher process."""
+        return self([], input=self.payloads[index], capture_output=True, text=True, timeout=120)
+
 
 @pytest.fixture
 def environment(tmp_path: Path):
@@ -145,7 +192,6 @@ def environment(tmp_path: Path):
     ca_key.chmod(0o600)
     signer = broker.LeaseSigner.generate()
     store = svc.BrokerStore(tmp_path / "broker.sqlite3", "enrollment-key")
-    store.add_passkey(svc.BrokerPasskey("credential-1", "operator", b"public-key", 0))
     cert_signer = svc.CaCertificateSigner(
         str(ca_key), builder=broker.CertificateCommandBuilder(broker.CertificatePolicy(source=f"{SOURCE}/32"))
     )
@@ -157,8 +203,7 @@ def environment(tmp_path: Path):
         rp_id="broker.example.test",
         origin="https://broker.example.test",
         enrollment_key="enrollment-key",
-        verifier=Verifier(),
-        registration_verifier=RegistrationVerifier(),
+        enrollment_enabled=True,
         cert_signer=cert_signer,
     )
 
@@ -204,7 +249,9 @@ def environment(tmp_path: Path):
         expiry_grace=0,
     )
     with TestClient(app) as client:
+        authenticator = _enroll(client)
         yield {
+            "authenticator": authenticator,
             "client": client,
             "store": store,
             "state": state,
@@ -226,13 +273,30 @@ def _create(env: dict, action: str = "ct.start", client=None) -> str:
     return inputs[0].stem
 
 
+def _enroll(client: TestClient) -> SoftwareAuthenticator:
+    authenticator = SoftwareAuthenticator()
+    created = client.post(
+        "/v1/broker/enrollments",
+        json={"operator": "operator"},
+        headers={"X-Broker-Enrollment-Key": "enrollment-key"},
+    )
+    assert created.status_code == 201, created.text
+    enrollment_id = created.json()["enrollment_id"]
+    challenge = client.get(f"/v1/broker/enrollments/{enrollment_id}/options").json()["challenge"]
+    completed = client.post(
+        f"/v1/broker/enrollments/{enrollment_id}/complete",
+        json={"credential": authenticator.credential(challenge, registration=True, count=0)},
+    )
+    assert completed.status_code == 200, completed.text
+    return authenticator
+
+
 def _approve(env: dict, request_id: str) -> None:
     client = env["client"]
-    assert client.get(f"/v1/broker/requests/{request_id}/approval/options").status_code == 200
-    response = client.post(
-        f"/v1/broker/requests/{request_id}/approval",
-        json={"credential": {"id": "credential-1", "proof": "verified"}},
-    )
+    options = client.get(f"/v1/broker/requests/{request_id}/approval/options")
+    assert options.status_code == 200
+    credential = env["authenticator"].credential(options.json()["challenge"])
+    response = client.post(f"/v1/broker/requests/{request_id}/approval", json={"credential": credential})
     assert response.status_code == 200, response.text
 
 
@@ -322,10 +386,17 @@ def test_uncertain_dispatch_is_reported_and_never_replayed(environment) -> None:
     first_calls = _pct_calls(environment["log"])
     assert first_calls == [["start", str(CT_ID)]]
 
-    # The lease is claimed UNKNOWN: a later poll cannot execute it again.
+    # A later poll cannot execute it again.
     process_pending_once(broker_client, environment["worker"], ssh_runner=ssh, now=int(time.time()) + 1)
     assert _pct_calls(environment["log"]) == first_calls
     assert ssh.calls == 1
+
+    # Nor can a *fresh dispatcher process* re-present the retained payload:
+    # the durable claim now answers UNKNOWN instead of executing.
+    replayed = ssh.replay(0)
+    assert replayed.returncode == 1
+    assert "unknown" in replayed.stdout
+    assert _pct_calls(environment["log"]) == first_calls
 
 
 def test_expired_grant_is_not_dispatched(environment, monkeypatch) -> None:
@@ -348,27 +419,24 @@ def test_concurrent_workers_execute_the_lease_once(environment) -> None:
     request_id = _create(environment)
     _approve(environment, request_id)
 
-    outcomes: list[dict] = []
     started = threading.Barrier(2)
 
-    def run() -> None:
+    def run() -> dict:
         # Each worker owns its transport and dispatcher process; the one-time
         # certificate and the durable claim must still admit one execution.
         client = AsgiBrokerClient(TestClient(environment["client"].app))
         ssh = DispatcherSsh(environment["dispatch"], env={"FAKE_PCT_LOG": str(environment["log"])})
         started.wait(timeout=10)
         process_pending_once(client, environment["worker"], ssh_runner=ssh, now=int(time.time()))
-        try:
-            outcomes.append(_result(environment, request_id))
-        except FileNotFoundError:
-            outcomes.append({"status": "missing"})
+        return _result(environment, request_id)
 
-    threads = [threading.Thread(target=run) for _ in range(2)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=30)
+    # result() re-raises any worker exception and proves both workers finished.
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(run) for _ in range(2)]
+        outcomes = [future.result(timeout=60) for future in futures]
 
+    assert len(outcomes) == 2
     assert _pct_calls(environment["log"]) == [["start", str(CT_ID)]]
-    statuses = [outcome["status"] for outcome in outcomes]
-    assert "succeeded" in statuses
+    statuses = sorted(outcome["status"] for outcome in outcomes)
+    assert statuses.count("succeeded") == 1
+    assert set(statuses) & {"error", "failed", "unknown"}
