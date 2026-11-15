@@ -111,6 +111,16 @@ _SNAPSHOT_NAME_RE = re.compile(r"^broker-[0-9a-f]{12}$")
 # interleave their save/restore pairs and leave the whole process at 077.
 _UMASK_LOCK = threading.Lock()
 
+# Two dispatchers may open the same database at once. SQLite answers a journal
+# mode change with SQLITE_BUSY without running the busy handler, so the schema
+# bootstrap is retried instead of failing the second opener outright. One
+# budget covers the whole bootstrap: every attempt may only wait for what is
+# left of it, so a peer that never releases the database still fails closed.
+_STATEMENT_TIMEOUT_SECONDS = 5.0
+_SCHEMA_DEADLINE_SECONDS = 5.0
+_SCHEMA_RETRY_SECONDS = 0.02
+_SCHEMA_BUSY_MARKERS = ("database is locked", "database table is locked", "database schema is locked")
+
 Runner = Callable[..., "subprocess.CompletedProcess[str]"]
 
 
@@ -364,37 +374,105 @@ class ClaimStore:
         with _UMASK_LOCK:
             old_umask = os.umask(0o077)
             try:
-                self._connection = sqlite3.connect(str(db_path), check_same_thread=False, isolation_level=None)
+                self._connection = sqlite3.connect(
+                    str(db_path),
+                    check_same_thread=False,
+                    isolation_level=None,
+                    timeout=_STATEMENT_TIMEOUT_SECONDS,
+                )
             finally:
                 os.umask(old_umask)
         self._connection.row_factory = sqlite3.Row
         try:
-            self._connection.executescript(
-                """
-                PRAGMA journal_mode=WAL;
-                -- FULL fsyncs every commit, so a claim is durable before the
-                -- operation starts. NORMAL can lose an acknowledged claim.
-                PRAGMA synchronous=FULL;
-                CREATE TABLE IF NOT EXISTS dispatch_claims (
-                  lease_id TEXT PRIMARY KEY,
-                  action TEXT NOT NULL,
-                  ct_id INTEGER NOT NULL,
-                  state TEXT NOT NULL DEFAULT 'CLAIMED',
-                  exit_code INTEGER,
-                  stdout TEXT,
-                  stderr TEXT,
-                  created_at INTEGER NOT NULL,
-                  completed_at INTEGER
-                );
-                """
-            )
+            self._initialize_schema()
         except BaseException:
             # Never leak a half-initialized connection or WAL handle.
             self._connection.close()
             raise
+        try:
+            db_path.chmod(0o600)
+        except OSError:
+            # A filesystem that refuses chmod keeps the umask-protected mode.
+            pass
+
+    def _initialize_schema(self) -> None:
+        """Create or migrate the claim schema, tolerating a peer that opens at once.
+
+        ``PRAGMA journal_mode=WAL`` takes a brief exclusive lock and SQLite does
+        not run the busy handler for it, so a second dispatcher starting beside
+        the first would otherwise fail with "database is locked". One budget
+        covers the whole bootstrap: every blocking statement waits for no more
+        than what is left of it, and the ordinary statement timeout is restored
+        afterwards, so a peer that holds the database past the budget fails this
+        one closed instead of stalling it for a further statement timeout.
+        """
+        deadline = time.monotonic() + _SCHEMA_DEADLINE_SECONDS
+        try:
+            while True:
+                try:
+                    self._apply_schema(deadline)
+                    return
+                except sqlite3.OperationalError as exc:
+                    if not any(marker in str(exc) for marker in _SCHEMA_BUSY_MARKERS):
+                        raise
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise
+                time.sleep(min(_SCHEMA_RETRY_SECONDS, remaining))
+        finally:
+            self._restore_statement_timeout()
+
+    def _set_busy_timeout(self, seconds: float) -> None:
+        milliseconds = max(int(seconds * 1000), 0)
+        self._connection.execute(f"PRAGMA busy_timeout = {milliseconds}")
+
+    def _wait_for_the_next_statement(self, deadline: float) -> None:
+        """Give the next blocking statement what is left of the bootstrap budget.
+
+        SQLite applies the busy timeout per statement, so one setting for the
+        whole bootstrap would let table creation and the migration wait the full
+        budget each.
+        """
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            # Refuse rather than start a fresh wait; the message keeps the
+            # lock-contention contract this bootstrap already fails closed with.
+            raise sqlite3.OperationalError("database is locked")
+        self._set_busy_timeout(remaining)
+
+    def _restore_statement_timeout(self) -> None:
+        try:
+            self._set_busy_timeout(_STATEMENT_TIMEOUT_SECONDS)
+        except sqlite3.Error:
+            # A connection that cannot take a pragma is reported by its caller.
+            pass
+
+    def _apply_schema(self, deadline: float) -> None:
+        self._wait_for_the_next_statement(deadline)
+        self._connection.execute("PRAGMA journal_mode=WAL")
+        # FULL fsyncs every commit, so a claim is durable before the operation
+        # starts. NORMAL can lose an acknowledged claim.
+        self._connection.execute("PRAGMA synchronous=FULL")
+        self._wait_for_the_next_statement(deadline)
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS dispatch_claims (
+              lease_id TEXT PRIMARY KEY,
+              action TEXT NOT NULL,
+              ct_id INTEGER NOT NULL,
+              state TEXT NOT NULL DEFAULT 'CLAIMED',
+              exit_code INTEGER,
+              stdout TEXT,
+              stderr TEXT,
+              created_at INTEGER NOT NULL,
+              completed_at INTEGER
+            )
+            """
+        )
         # A structured report is stored beside the excerpt, so a replay returns
         # the same arrays even when the excerpt itself is truncated. Inspect and
         # migrate under the database lock: two dispatchers may open at once.
+        self._wait_for_the_next_statement(deadline)
         try:
             self._connection.execute("BEGIN IMMEDIATE")
             columns = {row["name"] for row in self._connection.execute("PRAGMA table_info(dispatch_claims)")}
@@ -406,18 +484,17 @@ class ClaimStore:
                 self._connection.execute("ROLLBACK")
             except sqlite3.Error:
                 pass
-            self._connection.close()
             raise
-        try:
-            db_path.chmod(0o600)
-        except OSError:
-            # A filesystem that refuses chmod keeps the umask-protected mode.
-            pass
 
     @property
     def synchronous_level(self) -> int:
         """SQLite durability of this connection: 2 is ``FULL``, 1 is ``NORMAL``."""
         return int(self._connection.execute("PRAGMA synchronous").fetchone()[0])
+
+    @property
+    def busy_timeout_milliseconds(self) -> int:
+        """Lock wait this connection allows: the statement timeout once bootstrap ends."""
+        return int(self._connection.execute("PRAGMA busy_timeout").fetchone()[0])
 
     def close(self) -> None:
         self._connection.close()
