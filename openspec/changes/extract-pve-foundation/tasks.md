@@ -36,20 +36,25 @@ source evidence. Each unfinished task links to its tracking issue.
 
 ## Merge evidence
 
-| PR | Reviewed head | Review | Checks | Merge commit |
-| --- | --- | --- | --- | --- |
-| #21 | `ac326997771222401b4dc12c156f5752603cfeba` | 5904405398 | 11/11 | `28f5cb45f493681874900f0445ddadb0983ab37d` |
-| #26 | `5cc4922dfc280e7f367a7527f9a659a11369fc5a` | 5906162075 | 11/11 | `73d43f412fb6e54d55a540f57fca5704e423f102` |
-| #27 | `866c57be40b26a1f3651d5e56bc1e1a1adf4f61a` | 5907597734 | 10/10 | `4ed0d1fe40ad5c9b3d0766b17f56882d83b80be5` |
-| #28 | `a353373e5d6f71a9f88e6c6680ee7ebec5f84078` | 5907885378 | 11/11 | `2fc7b5f4466dcd2b0871c3d8bbdecddd64bcdc70` |
-| #29 | `b2007fe8e7c5119463e307430c8fdf599ca29bf4` | 5909828966 | 11/11 | `879cdeb5476474f60f57a89178b626985ea07ba6` |
-| #30 | `13b48f642079970ae2c0baf6623c28f5bb105207` | 5910153635 | 11/11 | `7ec12e83b4a8a162a3d2d20a3b22c9945648e717` |
-| #31 | `b0c987f90a2d70a0ad6545c3380fd5f9d6777483` | 5910318858 | 11/11 | `0e85708e9f7103ab74aa0f6024dada0dac6e8f57` |
+| PR | Reviewed head | Review | Checks | Merge commit | Merged by |
+| --- | --- | --- | --- | --- | --- |
+| [#21](https://github.com/mikomiel/privilege-broker/pull/21) | `ac326997771222401b4dc12c156f5752603cfeba` | [5904405398](https://github.com/mikomiel/privilege-broker/pull/21#pullrequestreview-5904405398) | 11/11 | `28f5cb45f493681874900f0445ddadb0983ab37d` | `mikomiel` |
+| [#26](https://github.com/mikomiel/privilege-broker/pull/26) | `5cc4922dfc280e7f367a7527f9a659a11369fc5a` | [5906162075](https://github.com/mikomiel/privilege-broker/pull/26#pullrequestreview-5906162075) | 11/11 | `73d43f412fb6e54d55a540f57fca5704e423f102` | `mikomiel` |
+| [#27](https://github.com/mikomiel/privilege-broker/pull/27) | `866c57be40b26a1f3651d5e56bc1e1a1adf4f61a` | [5907597734](https://github.com/mikomiel/privilege-broker/pull/27#pullrequestreview-5907597734) | 10/10 | `4ed0d1fe40ad5c9b3d0766b17f56882d83b80be5` | `github-actions[bot]` (ordinary documentation path) |
+| [#28](https://github.com/mikomiel/privilege-broker/pull/28) | `a353373e5d6f71a9f88e6c6680ee7ebec5f84078` | [5907885378](https://github.com/mikomiel/privilege-broker/pull/28#pullrequestreview-5907885378) | 11/11 | `2fc7b5f4466dcd2b0871c3d8bbdecddd64bcdc70` | `mikomiel` |
+| [#29](https://github.com/mikomiel/privilege-broker/pull/29) | `b2007fe8e7c5119463e307430c8fdf599ca29bf4` | [5909828966](https://github.com/mikomiel/privilege-broker/pull/29#pullrequestreview-5909828966) | 11/11 | `879cdeb5476474f60f57a89178b626985ea07ba6` | `mikomiel` |
+| [#30](https://github.com/mikomiel/privilege-broker/pull/30) | `13b48f642079970ae2c0baf6623c28f5bb105207` | [5910153635](https://github.com/mikomiel/privilege-broker/pull/30#pullrequestreview-5910153635) | 11/11 | `7ec12e83b4a8a162a3d2d20a3b22c9945648e717` | `mikomiel` |
+| [#31](https://github.com/mikomiel/privilege-broker/pull/31) | `b0c987f90a2d70a0ad6545c3380fd5f9d6777483` | [5910318858](https://github.com/mikomiel/privilege-broker/pull/31#pullrequestreview-5910318858) | 11/11 | `0e85708e9f7103ab74aa0f6024dada0dac6e8f57` | `mikomiel` |
 
-Every row is an exact ref: the head Gandalf approved, that review's id, the
-required check runs successful on that head, and the merge commit in `main`.
-These are source and merge facts only. No deployment, consumer cutover or
-runtime acceptance follows from them.
+`Checks` counts every check run observed on that head; the three required
+contexts are `checks`, `public-content` and `review` (see
+[repository governance](../../../docs/repository-standards.md#review-and-merge)).
+`Merged by` is the forge account that performed the merge. PR #27 changed only
+`docs/releases.md`, an ordinary path under the merge policy, so the trusted
+automerge merged it; every PR touching code, tests, scripts or workflows was
+merged by the maintainer account. Every row is an exact ref: the head Gandalf approved, that review, the check runs on that
+head, and the merge commit in `main`. These are source and merge facts only.
+No deployment, consumer cutover or runtime acceptance follows from them.
 
 ## Workflow follow-up
 
