@@ -2,8 +2,8 @@
 
 This pre-release stage supplies authorization, approval, certificate signing,
 the agent-side bridge and worker, and the target-side dispatcher with its
-durable claim store. Policy-bounded snapshot pruning and the generic
-execution-outcome API are not included yet. Deployment, credentials, TLS and
+durable claim store and policy-bounded snapshot pruning. The generic
+execution-outcome API is not included yet. Deployment, credentials, TLS and
 consumer cutover remain separate operator decisions. No example grants access
 to a real target.
 

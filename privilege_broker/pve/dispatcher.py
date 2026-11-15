@@ -90,6 +90,8 @@ NOT_ON_THIS_NODE_EXIT = 3
 PRUNE_ACTION = "ct.snapshot_prune"
 #: Byte limit for one stored output stream.
 _OUTPUT_LIMIT = 4096
+#: Byte limit for the durable structured report.
+_REPORT_LIMIT = 64 * 1024
 #: A delete does not start with less prune budget left than this.
 PRUNE_MIN_DELETE_SECONDS = 30
 #: One dated entry of ``pct listsnapshot``; ``current`` has no time and is skipped.
@@ -388,6 +390,11 @@ class ClaimStore:
             # Never leak a half-initialized connection or WAL handle.
             self._connection.close()
             raise
+        # A structured report is stored beside the excerpt, so a replay returns
+        # the same arrays even when the excerpt itself is truncated.
+        columns = {row["name"] for row in self._connection.execute("PRAGMA table_info(dispatch_claims)")}
+        if "report" not in columns:
+            self._connection.execute("ALTER TABLE dispatch_claims ADD COLUMN report TEXT")
         try:
             db_path.chmod(0o600)
         except OSError:
@@ -418,7 +425,7 @@ class ClaimStore:
         if cursor.rowcount == 1:
             return ("CLAIMED", None)
         row = self._connection.execute(
-            "SELECT state, action, ct_id, exit_code, stdout, stderr FROM dispatch_claims WHERE lease_id = ?",
+            "SELECT state, action, ct_id, exit_code, stdout, stderr, report FROM dispatch_claims WHERE lease_id = ?",
             (lease_id,),
         ).fetchone()
         if row is None:
@@ -432,6 +439,7 @@ class ClaimStore:
                     "exit_code": row["exit_code"],
                     "stdout": row["stdout"] or "",
                     "stderr": row["stderr"] or "",
+                    "report": row["report"],
                 },
             )
         if row["state"] == "CLAIMED":
@@ -444,11 +452,23 @@ class ClaimStore:
             )
         return ("UNKNOWN", None)
 
-    def complete(self, lease_id: str, state: str, exit_code: int | None, stdout: str, stderr: str, now: int) -> None:
+    def complete(
+        self,
+        lease_id: str,
+        state: str,
+        exit_code: int | None,
+        stdout: str,
+        stderr: str,
+        now: int,
+        report: str | None = None,
+    ) -> None:
+        stored_report = report
+        if stored_report is not None and len(stored_report.encode("utf-8")) > _REPORT_LIMIT:
+            stored_report = json.dumps({"truncated": True, "omitted_bytes": len(stored_report.encode("utf-8"))})
         self._connection.execute(
-            "UPDATE dispatch_claims SET state = ?, exit_code = ?, stdout = ?, stderr = ?, "
+            "UPDATE dispatch_claims SET state = ?, exit_code = ?, stdout = ?, stderr = ?, report = ?, "
             "completed_at = ? WHERE lease_id = ?",
-            (state, exit_code, _truncate(stdout), _truncate(stderr), now, lease_id),
+            (state, exit_code, _truncate(stdout), _truncate(stderr), stored_report, now, lease_id),
         )
 
     def get(self, lease_id: str) -> dict[str, Any] | None:
@@ -492,13 +512,20 @@ def prune_snapshots(
     """
     deadline = time.monotonic() + config.command_timeout
     report: dict[str, list[str]] = {"deleted": [], "kept": [], "failed": [], "kept_over_limit": []}
-    listing = runner(
-        [config.sudo_path, config.pct_path, "listsnapshot", str(ct_id)],
-        shell=False,
-        capture_output=True,
-        text=True,
-        timeout=config.command_timeout,
-    )
+    try:
+        listing = runner(
+            [config.sudo_path, config.pct_path, "listsnapshot", str(ct_id)],
+            shell=False,
+            capture_output=True,
+            text=True,
+            timeout=config.command_timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return ("FAILED", 1, report, "listing timed out; nothing was deleted")
+    except UnicodeDecodeError:
+        return ("FAILED", 1, report, "listing output could not be decoded; nothing was deleted")
+    except OSError:
+        return ("FAILED", 1, report, "listing could not be started; nothing was deleted")
     if listing.returncode != 0:
         return ("FAILED", int(listing.returncode) or 1, report, _truncate(listing.stderr))
 
@@ -529,6 +556,12 @@ def prune_snapshots(
             report["kept_over_limit"] = candidates[index + 1 :]
             timed_out = True
             break
+        except UnicodeDecodeError:
+            report["failed"].append(name)
+            errors.append(f"{name}: output could not be decoded; the delete may still complete")
+            report["kept_over_limit"] = candidates[index + 1 :]
+            errors.append("remaining deletes were deferred")
+            return ("UNKNOWN", 1, report, "\n".join(errors))
         except OSError:
             report["failed"].append(name)
             errors.append(f"{name}: the delete could not be started")
@@ -636,9 +669,9 @@ def dispatch(
             # Nothing executed, so the request is refused, not retried here.
             return _refusal("claim store is unavailable; nothing was executed")
 
-    def record(state: str, exit_code: int | None, stdout: str, stderr: str) -> bool:
+    def record(state: str, exit_code: int | None, stdout: str, stderr: str, report: str | None = None) -> bool:
         try:
-            claim_store.complete(request.lease.lease_id, state, exit_code, stdout, stderr, now)
+            claim_store.complete(request.lease.lease_id, state, exit_code, stdout, stderr, now, report)
         except sqlite3.Error:
             # The claim row keeps its CLAIMED state, so a later presentation is
             # UNKNOWN rather than a second execution.
@@ -652,6 +685,14 @@ def dispatch(
             return _refusal("claim store is unavailable; nothing was executed")
         if state in ("SUCCEEDED", "FAILED"):
             assert stored is not None
+            replayed_report: dict[str, Any] = {}
+            if isinstance(stored.get("report"), str):
+                try:
+                    parsed_report = json.loads(stored["report"])
+                except ValueError:
+                    parsed_report = None
+                if isinstance(parsed_report, dict):
+                    replayed_report = parsed_report
             return (
                 int(stored["exit_code"] or 0),
                 {
@@ -660,6 +701,7 @@ def dispatch(
                     "stderr": stored["stderr"],
                     "lease_id": request.lease.lease_id,
                     "replayed": True,
+                    **replayed_report,
                 },
             )
         if state == "UNKNOWN":
@@ -670,7 +712,7 @@ def dispatch(
                 config, request.ct_id, policy.snapshot_retention_days, now, runner
             )
             stored_report = json.dumps(report, sort_keys=True)
-            if not record(prune_state, prune_exit, stored_report, errors):
+            if not record(prune_state, prune_exit, stored_report, errors, report=stored_report):
                 return _uncertain("snapshot prune ran but its result could not be recorded; outcome unknown", **report)
             if prune_state == "UNKNOWN":
                 return _uncertain("snapshot prune timed out; some deletes may still complete", **report)

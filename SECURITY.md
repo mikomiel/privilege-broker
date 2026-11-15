@@ -43,8 +43,8 @@ eligible executor may serve a target for the lease lifetime, and the SQLite
 database must not be shared over a network filesystem. A target that can move to
 a second dispatcher inside that lifetime is out of scope until the broker binds
 a lease to one executor; cross-host exclusivity needs broker-controlled
-coordination, not a shared WAL file. Policy-bounded
-snapshot pruning and a generic outcome API are not included yet. The client
+coordination, not a shared WAL file. A generic outcome
+API is not included yet. The client
 rejects redirects; deployers must supply the broker endpoint, trust material,
 claim storage and protected worker state. Approval and certificate issuance
 are not evidence that an operation ran.

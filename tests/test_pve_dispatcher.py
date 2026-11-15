@@ -930,6 +930,62 @@ def test_prune_replay_returns_the_stored_report(config, private_key) -> None:
     assert replay.calls == []
 
 
+def test_prune_listing_timeout_is_a_structured_failure(config, private_key) -> None:
+    from subprocess import TimeoutExpired
+
+    config = replace(config, command_timeout=180)
+    runner = Runner([TimeoutExpired(cmd="pct", timeout=180)])
+    exit_code, output = _run(config, private_key, _request_json(private_key, "ct.snapshot_prune"), runner)
+    assert exit_code == 1
+    assert "listing timed out" in output["stderr"]
+    assert output["deleted"] == [] and output["failed"] == []
+    assert len(runner.calls) == 1
+    with ClaimStore(config.claim_db_path) as store:
+        stored = store.get(LEASE_ID)
+    assert stored is not None and stored["state"] == "FAILED"
+
+
+def test_prune_delete_decode_failure_is_unknown_and_keeps_the_partial_report(config, private_key) -> None:
+    config = replace(config, command_timeout=180)
+    listing = _snapshot_listing([("broker-aaaaaaaaaaaa", OLD), ("broker-bbbbbbbbbbbb", OLD)])
+
+    def decode_failure(argv, **kwargs):
+        if argv[2] == "listsnapshot":
+            return CompletedProcess(argv, 0, listing, "")
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    exit_code, output = _run(config, private_key, _request_json(private_key, "ct.snapshot_prune"), decode_failure)
+    assert exit_code == 1
+    assert output["outcome"] == "unknown"
+    assert output["failed"] == ["broker-aaaaaaaaaaaa"]
+    assert output["kept_over_limit"] == ["broker-bbbbbbbbbbbb"]
+    with ClaimStore(config.claim_db_path) as store:
+        stored = store.get(LEASE_ID)
+    assert stored is not None and stored["state"] == "UNKNOWN"
+
+
+def test_prune_report_survives_replay_beyond_the_excerpt_limit(config, private_key) -> None:
+    config = replace(config, command_timeout=180)
+    names = [f"broker-{index:012x}" for index in range(200)]
+    listing = _snapshot_listing([(name, RECENT) for name in names])
+    runner = Runner([CompletedProcess([], 0, listing, "")])
+    text = _request_json(private_key, "ct.snapshot_prune")
+    first_exit, first = _run(config, private_key, text, runner)
+    assert first_exit == 0
+    assert first["kept"] == names
+    assert len(json.dumps(first)) > 4096
+
+    replay = Runner([])
+    with ClaimStore(config.claim_db_path) as store:
+        second_exit, second = dispatch(
+            parse_request(text), config, public_key=private_key.public_key(), now=NOW + 1, store=store, runner=replay
+        )
+    assert second_exit == 0
+    assert second["replayed"] is True
+    assert second["kept"] == names
+    assert replay.calls == []
+
+
 def test_verify_lease_returns_claims(private_key) -> None:
     claims = _lease_claims()
     signature = private_key.sign(canonical_json(claims).encode("ascii"))
