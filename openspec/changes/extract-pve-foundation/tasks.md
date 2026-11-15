@@ -30,7 +30,7 @@ source evidence. Each unfinished task links to its tracking issue.
 
 ## 5. Product acceptance and handoff
 
-- [ ] 5.1 Run a synthetic end-to-end approval-to-outcome flow with real local crypto, storage and protocol handling and substituted external mutations; verify allowed, denied, expired, tampered, concurrent and uncertain outcomes with fresh-process tests. [Issue #11](https://github.com/mikomiel/privilege-broker/issues/11).
+- [x] 5.1 Run a synthetic end-to-end approval-to-outcome flow with real local crypto, storage and protocol handling and substituted external mutations; verify allowed, denied, expired, tampered, concurrent and uncertain outcomes with fresh-process tests. [Issue #11](https://github.com/mikomiel/privilege-broker/issues/11). Coverage is `tests/test_e2e_lifecycle.py`; the dispatcher runs as a fresh process and only the TLS transport, SSH and `pct` are substituted.
 - [ ] 5.2 Verify the public product installs and checks without private paths or services; document runnable entrypoints, supported interfaces and known limits with exact source evidence. [Issue #12](https://github.com/mikomiel/privilege-broker/issues/12).
 - [ ] 5.3 Obtain exact-head required CI, independent approval and human merge for every executable or sensitive PR; record source and merge evidence without claiming deployment. [Issue #13](https://github.com/mikomiel/privilege-broker/issues/13).
 

@@ -91,6 +91,12 @@ challenge and request expiry, altered keys, denial, scoped leases, one-time
 and concurrent certificate fetching, database permissions and audit content.
 Local certificate tests use real generated keys and `ssh-keygen`.
 
+Synthetic end-to-end tests run the real approval service, SQLite store, lease
+signer, ssh-keygen CA, bridge and worker, and invoke the dispatcher as a fresh
+process; only the TLS transport, SSH and `pct` are substituted. They cover an
+allowed dispatch, denial, expiry, a tampered lease, concurrent workers and an
+uncertain timeout, and assert that no path dispatches twice.
+
 Software-authenticator tests exercise actual WebAuthn CBOR, P-256 signatures,
 RP/origin/challenge checks, user-presence and user-verification flags, counter
 rollback and wrong signing keys. They do not prove physical user presence,
