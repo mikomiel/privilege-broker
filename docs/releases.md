@@ -33,8 +33,9 @@ maintainer decisions.
 Never restore `skip-github-release: true`. It disables the only step that
 flips that label, and the guard against a second release PR reads the label
 rather than the tag, so a merged release PR that stays pending blocks every
-later run with "There are untagged, merged release PRs outstanding". Without a
-tag release-please also cannot identify the commit range or the next version.
+later run with "There are untagged, merged release PRs outstanding". Without
+a tag release-please cannot tell which commits are new: it falls back to the
+whole history instead of the range since the last version.
 
 Tags never move, and a release identifies the source and compatibility changes
 it contains. Network operators must offer the corresponding AGPL source of the

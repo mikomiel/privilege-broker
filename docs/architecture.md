@@ -108,8 +108,9 @@ is explicit constructor input.
   `sudo`, TLS, trust roots and the state directory are deployer-owned.
 - WebAuthn coverage uses software authenticators; no browser or hardware-passkey
   acceptance is claimed.
-- No tag, package publication, container image or deployment is produced by the
-  source repository alone.
+- No package publication, container image or deployment is produced by the
+  source repository alone. A version tag and its GitHub Release are, and they
+  assert nothing about deployment.
 
 ## Compatibility and extraction adaptations
 
