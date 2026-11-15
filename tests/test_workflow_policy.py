@@ -202,10 +202,27 @@ def test_release_please_observes_automated_merges_and_requires_its_token() -> No
     assert step["uses"].startswith("googleapis/release-please-action@")
     assert step["with"] == {
         "token": "${{ secrets.RELEASE_PLEASE_TOKEN }}",
-        "skip-github-release": True,
         "config-file": "release-please-config.json",
         "manifest-file": ".release-please-manifest.json",
     }
+    assert document["concurrency"] == {"group": "release-please", "cancel-in-progress": False}
+
+
+def test_release_please_publishes_its_own_tag_and_release() -> None:
+    """A merged release PR stays pending unless release-please itself tags it.
+
+    ``skip-github-release`` disables the release creation that flips
+    ``autorelease: pending`` to ``autorelease: tagged``, and the guard against a
+    second release PR reads the label, not the tag. Restoring that input wedges
+    the stream: release PR #2 merged on 2026-11-14 and every later run aborted
+    with "There are untagged, merged release PRs outstanding" while the
+    repository held no tag and no GitHub Release. Removing the tag step again
+    has to fail here instead of silently stopping future release PRs.
+    """
+    document = workflow("release-please.yml")
+    (step,) = document["jobs"]["release-please"]["steps"]
+    assert "skip-github-release" not in step["with"]
+    assert document["permissions"]["contents"] == "write"
 
 
 def test_release_metadata_is_never_auto_merged() -> None:

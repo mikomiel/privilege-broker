@@ -1,10 +1,8 @@
 # Releases
 
 privilege-broker uses SemVer and Conventional Commits. Version 0.x can include
-breaking changes, which must be identified in release notes. No product
-release has been published yet: the `0.1.0` version metadata and
-`CHANGELOG.md` are merged, but no tag or GitHub Release exists. Version
-`0.0.0` was the source bootstrap marker and was never a supported release.
+breaking changes, which must be identified in release notes. Version `0.0.0`
+was the source bootstrap marker and was never a supported release.
 
 Release-please is the single owner of version and changelog updates. It uses
 `release-please-config.json` and `.release-please-manifest.json` to propose
@@ -25,13 +23,20 @@ Contents and Pull requests write access; its value is never read or printed
 by development tools. Its PRs must run normal required CI and independent
 review. Version metadata remains a sensitive, human-merge path.
 
-**Current publication gate:** `skip-github-release: true` deliberately
-allows release-PR preparation only. Even merging a release PR does not
-create a tag or GitHub Release with this configuration. Publishing the first
-release requires a separate decision for the exact source and a reviewed
-change to that boundary. No PyPI, container registry or deployment publisher
-is installed.
+**Publication boundary.** Merging a release PR publishes version metadata: on
+its next run release-please creates the `vX.Y.Z` tag on that release commit and
+a GitHub Release carrying the changelog section, then flips the pull request
+from `autorelease: pending` to `autorelease: tagged`. No PyPI, container
+registry, image or deployment publisher is installed; those remain separate
+maintainer decisions.
 
-After publication is authorized, tags must never move and releases must
-identify the corresponding source and compatibility changes. Network
-operators must offer the corresponding AGPL source of the version they run.
+Never restore `skip-github-release: true`. It disables the only step that
+flips that label, and the guard against a second release PR reads the label
+rather than the tag, so a merged release PR that stays pending blocks every
+later run with "There are untagged, merged release PRs outstanding". Without
+a tag release-please cannot tell which commits are new: it falls back to the
+whole history instead of the range since the last version.
+
+Tags never move, and a release identifies the source and compatibility changes
+it contains. Network operators must offer the corresponding AGPL source of the
+version they run.
