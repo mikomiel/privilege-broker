@@ -56,6 +56,8 @@ _LOG = logging.getLogger("privilege_broker.pve.worker")
 NOT_ON_THIS_NODE_EXIT = 3
 #: Character limit for stored stdout/stderr excerpts and lifted dispatcher strings.
 _OUTPUT_LIMIT = 4096
+#: Maximum report entries lifted from one dispatcher reply.
+_REPORT_ENTRIES = 256
 #: SSH connect timeout; the overall dispatch timeout is ``WorkerConfig.ssh_timeout``.
 _CONNECT_TIMEOUT = 10
 
@@ -137,6 +139,18 @@ def _dispatcher_outcome(stdout: str) -> dict[str, Any]:
         outcome["dispatcher_replayed"] = parsed["replayed"]
     if parsed.get("outcome") == "unknown":
         outcome["dispatcher_outcome"] = "unknown"
+    # A prune report is already bounded by the dispatcher; lift it so the
+    # terminal result keeps the lists the 4096-character excerpt would cut.
+    for key in ("deleted", "kept", "failed", "kept_over_limit"):
+        names = parsed.get(key)
+        if isinstance(names, list) and all(isinstance(name, str) for name in names):
+            outcome[f"dispatcher_{key}"] = [name[:_OUTPUT_LIMIT] for name in names[:_REPORT_ENTRIES]]
+    for key in ("deleted_omitted", "kept_omitted", "failed_omitted", "kept_over_limit_omitted"):
+        value = parsed.get(key)
+        if type(value) is int and value >= 0:
+            outcome[f"dispatcher_{key}"] = value
+    if parsed.get("report_truncated") is True:
+        outcome["dispatcher_report_truncated"] = True
     return outcome
 
 

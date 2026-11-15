@@ -1159,6 +1159,48 @@ def test_prune_delete_spawn_failure_is_failed(config, private_key) -> None:
     assert output["failed"] == ["broker-aaaaaaaaaaaa"]
 
 
+def test_worker_keeps_a_large_prune_report(config, private_key, tmp_path) -> None:
+    config = replace(config, command_timeout=180)
+    names = [f"broker-{index:012x}" for index in range(200)]
+    listing = _snapshot_listing([(name, RECENT) for name in names])
+    runner = Runner([CompletedProcess([], 0, listing, "")])
+    exit_code, output = _run(config, private_key, _request_json(private_key, "ct.snapshot_prune"), runner)
+    assert exit_code == 0 and len(json.dumps(output)) > 4096
+
+    state_dir = tmp_path / "worker-large-report"
+    worker_config = _worker_config(state_dir)
+    _worker_input(state_dir)
+    ssh = _WorkerSsh(CompletedProcess([], exit_code, json.dumps(output), ""))
+    process_pending_once(_WorkerBroker(), worker_config, now=NOW, ssh_runner=ssh)
+
+    result = json.loads((state_dir / "results" / "req-1.json").read_text(encoding="utf-8"))
+    assert result["status"] == "succeeded"
+    assert result["dispatcher_kept"] == names
+    assert len(ssh.calls) == 1
+
+
+def test_worker_keeps_an_uncertain_prune_report(config, private_key, tmp_path) -> None:
+    from subprocess import TimeoutExpired
+
+    config = replace(config, command_timeout=180)
+    listing = _snapshot_listing([("broker-aaaaaaaaaaaa", OLD), ("broker-bbbbbbbbbbbb", OLD)])
+    runner = Runner([CompletedProcess([], 0, listing, ""), TimeoutExpired(cmd="pct", timeout=30)])
+    exit_code, output = _run(config, private_key, _request_json(private_key, "ct.snapshot_prune"), runner)
+    assert exit_code == 1 and output["outcome"] == "unknown"
+
+    state_dir = tmp_path / "worker-uncertain-report"
+    worker_config = _worker_config(state_dir)
+    _worker_input(state_dir)
+    ssh = _WorkerSsh(CompletedProcess([], exit_code, json.dumps(output), ""))
+    process_pending_once(_WorkerBroker(), worker_config, now=NOW, ssh_runner=ssh)
+
+    result = json.loads((state_dir / "results" / "req-1.json").read_text(encoding="utf-8"))
+    assert result["status"] == "unknown"
+    assert result["dispatcher_failed"] == ["broker-aaaaaaaaaaaa"]
+    assert result["dispatcher_kept_over_limit"] == ["broker-bbbbbbbbbbbb"]
+    assert len(ssh.calls) == 1
+
+
 def test_verify_lease_returns_claims(private_key) -> None:
     claims = _lease_claims()
     signature = private_key.sign(canonical_json(claims).encode("ascii"))
