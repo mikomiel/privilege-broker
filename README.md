@@ -73,7 +73,7 @@ Read [architecture and extraction status](docs/architecture.md),
 and [the release process](docs/releases.md).
 The [GitHub issue backlog](https://github.com/mikomiel/privilege-broker/issues)
 tracks remaining repository work. The active
-[OpenSpec change](openspec/changes/extract-pve-foundation/proposal.md) owns the
+[archived OpenSpec change](openspec/changes/archive/2026-11-15-extract-pve-foundation/proposal.md) recorded the
 technical design and acceptance criteria for the agent interfaces, execution
 components and end-to-end acceptance.
 See [configuration](docs/configuration.md#approval-service) for the explicit
