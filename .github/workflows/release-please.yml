@@ -18,8 +18,9 @@
 # release creation this input disables, and its guard against a second release
 # pull request reads the label rather than the tag. A merged release pull
 # request that stays pending therefore blocks every later run with "There are
-# untagged, merged release PRs outstanding", and with no tag it cannot find the
-# commit range or the next version either.
+# untagged, merged release PRs outstanding", and with no tag it cannot tell
+# which commits are new, falling back to the whole history instead of the range
+# since the previous release.
 #
 # The token is a fine-grained personal access token with Contents: write and
 # Pull requests: write on this repository, stored as RELEASE_PLEASE_TOKEN. The
