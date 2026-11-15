@@ -80,4 +80,5 @@ no browser or hardware-passkey acceptance claim: the approval UI is packaged,
 but its local tests use software authenticator crypto and HTML checks. There
 is no product-release or artifact-attestation claim; no product artifact has
 been published.
-See [releases.md](releases.md) for release-please and its explicit publication gate.
+See [releases.md](releases.md) for release-please, which tags and publishes the
+GitHub Release when a release pull request merges, and for that boundary.
