@@ -165,7 +165,7 @@ the stored result with `replayed`; a claim left `CLAIMED` by a dead process
 becomes `UNKNOWN` and is never re-executed. `ct.snapshot_prune` deletes only broker-owned snapshots older than the policy
 retention and reports what it deleted, kept, failed or deferred.
 
-The active [OpenSpec change](../openspec/changes/extract-pve-foundation/proposal.md)
+The archived [OpenSpec change](../openspec/changes/archive/2026-11-15-extract-pve-foundation/proposal.md)
 owns the outcome interfaces and
 end-to-end acceptance. Consumer pinning, deployment and live
 PVE acceptance are separate gates. No current consumer has switched.
