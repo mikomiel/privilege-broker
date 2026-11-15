@@ -1056,6 +1056,24 @@ def test_old_schema_migration_is_safe_under_concurrent_open(tmp_path) -> None:
     assert "report" in columns
 
 
+def test_prune_timeout_response_is_bounded(config, private_key) -> None:
+    from subprocess import TimeoutExpired
+
+    config = replace(config, command_timeout=180)
+    names = [f"broker-{index:012x}" for index in range(3000)]
+    listing = _snapshot_listing([(name, OLD) for name in names])
+    runner = Runner(
+        [CompletedProcess([], 0, listing, ""), TimeoutExpired(cmd="pct", timeout=30), CompletedProcess([], 0, "", "")]
+    )
+    exit_code, output = _run(config, private_key, _request_json(private_key, "ct.snapshot_prune"), runner)
+    assert exit_code == 1
+    assert output["outcome"] == "unknown"
+    assert len(json.dumps(output).encode()) < 64 * 1024
+    assert len(output["kept_over_limit"]) == 256
+    assert output["kept_over_limit_omitted"] == 3000 - 1 - 256
+    assert output["report_truncated"] is True
+
+
 def test_verify_lease_returns_claims(private_key) -> None:
     claims = _lease_claims()
     signature = private_key.sign(canonical_json(claims).encode("ascii"))

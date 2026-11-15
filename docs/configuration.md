@@ -214,7 +214,7 @@ therefore see a pending request or complete terminal JSON during publication,
 not a partially written result. A failed result write leaves input and keys
 intact and removes its temporary file; it does not publish partial JSON.
 The target dispatcher and its claim store are included. Policy-bounded snapshot
-pruning remains OpenSpec task 4.3 and the generic outcome API task 5.1.
+pruning is included with the dispatcher; the generic outcome API remains OpenSpec task 5.1.
 
 ## Target dispatcher
 
@@ -294,7 +294,7 @@ The builder only returns argv; the configured service signer invokes local
 A certificate is safe only with the trusted typed dispatcher and lease
 verification on the target. The extracted dispatcher performs that verification
 and enforces the same policy before it claims the lease; snapshot pruning is
-still OpenSpec task 4.3. Do not treat certificate issuance as an operation
+enforced by the extracted dispatcher. Do not treat certificate issuance as an operation
 outcome, and never enable a general shell as a substitute for the dispatcher.
 
 ## Operator notifications

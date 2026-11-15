@@ -112,7 +112,7 @@ becomes `UNKNOWN` and is never re-executed. `ct.snapshot_prune` deletes only bro
 retention and reports what it deleted, kept, failed or deferred.
 
 The active [OpenSpec change](../openspec/changes/extract-pve-foundation/proposal.md)
-owns the remaining dispatcher pruning work, the outcome interfaces and
+owns the outcome interfaces and
 end-to-end acceptance. Consumer pinning, deployment and live
 PVE acceptance are separate gates. No current consumer has switched.
 

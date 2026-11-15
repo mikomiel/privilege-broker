@@ -753,9 +753,14 @@ def dispatch(
             public_report = bound_report(report)
             stored_report = json.dumps(public_report, sort_keys=True)
             if not record(prune_state, prune_exit, stored_report, errors, report=stored_report):
-                return _uncertain("snapshot prune ran but its result could not be recorded; outcome unknown", **report)
+                return _uncertain(
+                    "snapshot prune ran but its result could not be recorded; outcome unknown", **public_report
+                )
             if prune_state == "UNKNOWN":
-                return _uncertain("snapshot prune timed out; some deletes may still complete", **report)
+                return _uncertain(
+                    "snapshot prune timed out or its output could not be decoded; some deletes may still complete",
+                    **public_report,
+                )
             return (
                 prune_exit,
                 {
