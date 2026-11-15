@@ -399,15 +399,17 @@ def test_uncertain_dispatch_is_reported_and_never_replayed(environment) -> None:
     assert _pct_calls(environment["log"]) == first_calls
 
 
-def test_expired_grant_is_not_dispatched(environment, monkeypatch) -> None:
-    monkeypatch.setattr(svc, "BROKER_GRANT_TTL_SECONDS", 1)
+def test_expired_grant_is_not_dispatched(environment) -> None:
     request_id = _create(environment)
     _approve(environment, request_id)
-    time.sleep(2.2)
+    pending = json.loads((environment["state"] / "input" / f"{request_id}.json").read_text(encoding="utf-8"))
 
     ssh = DispatcherSsh(environment["dispatch"], env={"FAKE_PCT_LOG": str(environment["log"])})
     process_pending_once(
-        AsgiBrokerClient(environment["client"]), environment["worker"], ssh_runner=ssh, now=int(time.time())
+        AsgiBrokerClient(environment["client"]),
+        environment["worker"],
+        ssh_runner=ssh,
+        now=pending["expires_at"] + 1,
     )
 
     assert _result(environment, request_id) == {"status": "expired"}
@@ -420,19 +422,29 @@ def test_concurrent_workers_execute_the_lease_once(environment) -> None:
     _approve(environment, request_id)
 
     started = threading.Barrier(2)
+    # One poller per state directory: each worker gets its own copy of the
+    # pending request and key, while the broker request and claim DB are shared.
+    workers = []
+    for name in ("worker-a", "worker-b"):
+        state_dir = environment["state"].parent / name
+        (state_dir / "input").mkdir(parents=True)
+        (state_dir / "keys").mkdir()
+        for staged in (environment["state"] / "input").iterdir():
+            (state_dir / "input" / staged.name).write_bytes(staged.read_bytes())
+        for staged in (environment["state"] / "keys").iterdir():
+            (state_dir / "keys" / staged.name).write_bytes(staged.read_bytes())
+        workers.append(replace(environment["worker"], state_dir=state_dir))
 
-    def run() -> dict:
-        # Each worker owns its transport and dispatcher process; the one-time
-        # certificate and the durable claim must still admit one execution.
+    def run(worker) -> dict:
         client = AsgiBrokerClient(TestClient(environment["client"].app))
         ssh = DispatcherSsh(environment["dispatch"], env={"FAKE_PCT_LOG": str(environment["log"])})
         started.wait(timeout=10)
-        process_pending_once(client, environment["worker"], ssh_runner=ssh, now=int(time.time()))
-        return _result(environment, request_id)
+        process_pending_once(client, worker, ssh_runner=ssh, now=int(time.time()))
+        return json.loads((worker.state_dir / "results" / f"{request_id}.json").read_text(encoding="utf-8"))
 
     # result() re-raises any worker exception and proves both workers finished.
     with ThreadPoolExecutor(max_workers=2) as pool:
-        futures = [pool.submit(run) for _ in range(2)]
+        futures = [pool.submit(run, worker) for worker in workers]
         outcomes = [future.result(timeout=60) for future in futures]
 
     assert len(outcomes) == 2
