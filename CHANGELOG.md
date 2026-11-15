@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.2.0](https://github.com/mikomiel/privilege-broker/compare/v0.1.0...v0.2.0) (2026-11-15)
+
+
+### Features
+
+* **pve:** add the typed dispatcher and durable claim store ([2fc7b5f](https://github.com/mikomiel/privilege-broker/commit/2fc7b5f4466dcd2b0871c3d8bbdecddd64bcdc70))
+* **pve:** add the typed dispatcher and durable claim store ([bc9fc39](https://github.com/mikomiel/privilege-broker/commit/bc9fc39a52f82f6a7a430da8e388f2ec21d3626c))
+* **pve:** dispatch policy-bounded snapshot pruning ([879cdeb](https://github.com/mikomiel/privilege-broker/commit/879cdeb5476474f60f57a89178b626985ea07ba6))
+* **pve:** dispatch policy-bounded snapshot pruning ([af2a688](https://github.com/mikomiel/privilege-broker/commit/af2a688a6d199dd6bdef6ed5b6b5d96c0a6a4507))
+
+
+### Bug Fixes
+
+* **pve:** accept file stdin and normalise decoder recursion ([9ad73fe](https://github.com/mikomiel/privilege-broker/commit/9ad73fe7e950974d0a93f2ee9034cf686e7e6885))
+* **pve:** bound prune replies, replay unknown reports and serialize migration ([3a03955](https://github.com/mikomiel/privilege-broker/commit/3a03955237e02379bc07c9f4ce891b902dacdaa9))
+* **pve:** bound request intake and survive undecodable output ([4c417b5](https://github.com/mikomiel/privilege-broker/commit/4c417b57973081ae1b835df57c0a0f06b651ad18))
+* **pve:** bound uncertain prune replies and drop stale status text ([50ee2cd](https://github.com/mikomiel/privilege-broker/commit/50ee2cdeace55837bf26d877ab3a2fb75f6c34c4))
+* **pve:** carry dispatcher uncertainty into the worker result ([a353373](https://github.com/mikomiel/privilege-broker/commit/a353373e5d6f71a9f88e6c6680ee7ebec5f84078))
+* **pve:** guard claim-store construction and prove claim retention ([dee44bc](https://github.com/mikomiel/privilege-broker/commit/dee44bc1357976f1e520efcf789a1146bede02ec))
+* **pve:** guard prune failures and persist the structured report ([ed44fc1](https://github.com/mikomiel/privilege-broker/commit/ed44fc190059160a7e373437b7e3d0ae1888ddbd))
+* **pve:** handle non-pipe stdin and interpreter-depth refusals ([b94233b](https://github.com/mikomiel/privilege-broker/commit/b94233bbf76506742e98410189bb5b9f27b44cf7))
+* **pve:** keep DST-ambiguous snapshots inside retention ([c5bf986](https://github.com/mikomiel/privilege-broker/commit/c5bf98659401f61c656794aaeac02fbcb0a3107c))
+* **pve:** keep the bounded prune report in the worker result ([b2007fe](https://github.com/mikomiel/privilege-broker/commit/b2007fe8e7c5119463e307430c8fdf599ca29bf4))
+* **pve:** make claims crash-durable and scope dispatch exclusivity ([b1cef6a](https://github.com/mikomiel/privilege-broker/commit/b1cef6a92a9339b968bd66a8f7def302bce220eb))
+* **pve:** retry the claim schema bootstrap against a short lock ([d341b88](https://github.com/mikomiel/privilege-broker/commit/d341b888e7946e2f25c835ecf7ae4bbacb73157f))
+* **pve:** retry the claim schema bootstrap within one budget ([7128617](https://github.com/mikomiel/privilege-broker/commit/7128617e359d54810bdd6f57469bf6db12b2b7e5)), closes [#37](https://github.com/mikomiel/privilege-broker/issues/37)
+* **pve:** scope dispatch to one host and report persistence faults ([79c37b1](https://github.com/mikomiel/privilege-broker/commit/79c37b17eb700fbed6ea8af9ec853c1e2e5ec324))
+* **release:** let release-please tag and publish GitHub Releases ([7c985eb](https://github.com/mikomiel/privilege-broker/commit/7c985ebfb3279687fbd307ea018093561f8d4f23))
+* **release:** let release-please tag and publish GitHub Releases ([ca3cacb](https://github.com/mikomiel/privilege-broker/commit/ca3cacb68da3aa11d77191046bcfd77b876458ea))
+
 ## 0.1.0 (2026-11-14)
 
 
