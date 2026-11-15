@@ -48,6 +48,19 @@ The example uses ephemeral keys in memory and synthetic data. It performs no
 network access, passkey approval, certificate signing or PVE operation.
 It is a library demonstration, not an authorization service.
 
+## Install the package
+
+```sh
+uv build
+uv pip install dist/*.whl
+python -m privilege_broker.pve.dispatcher --help
+```
+
+The wheel is self-contained Python with explicit configuration: no private
+path, host name, credential or service is required to install it or to read the
+dispatcher help. See [supported interfaces](docs/architecture.md#supported-interfaces)
+for the complete surface and its known limits.
+
 ## Documentation
 
 Read [architecture and extraction status](docs/architecture.md),

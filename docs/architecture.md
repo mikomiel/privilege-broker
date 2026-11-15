@@ -64,6 +64,48 @@ certificate issuance are authorization events, never execution evidence, and
 no agent-supplied execution evidence is accepted. An uncertain outcome is
 never reported as success.
 
+## Supported interfaces
+
+The installed distribution is `privilege-broker` (import `privilege_broker`),
+Python 3.11 or newer. These are the supported surfaces at this stage:
+
+| Interface | Entry point | Purpose |
+| --- | --- | --- |
+| Approval service | `privilege_broker.pve.service.create_broker_app(...)` | FastAPI app over an explicit `BrokerStore`, `LeaseSigner`, identity extractor, policy and optional certificate signer |
+| Approval HTTP API | `/v1/broker/requests`, `/approval/options`, `/approval`, `/denial`, `/lease`, `/certificate`, `/status` | Typed request, passkey approval, one-time lease and certificate, lifecycle status |
+| Agent bridge | `privilege_broker.pve.bridge.ApprovalBridge` with `BridgeConfig` | Create a typed request, publish pending input atomically, read the worker status |
+| Broker client | `privilege_broker.pve.client.BrokerClient` with `BrokerClientConfig` | mTLS HTTPS calls with explicit trust material; redirects refused |
+| Execution worker | `privilege_broker.pve.worker.WorkerConfig`, `process_pending_once`, `run` | Poll approvals, fetch the lease and certificate, dispatch, publish the result |
+| Target dispatcher | `python -m privilege_broker.pve.dispatcher` | Verify the lease, claim it durably, run one fixed argv or the policy-bounded prune |
+| Policy and lease helpers | `privilege_broker.pve.common`, `privilege_broker.pve.authorization` | Version 2 policy, canonical payloads, lease signing and verification, certificate argv |
+| Notifications | `privilege_broker.notifications` | Server-owned Discord delivery with credential-safe errors |
+
+Install and inspect the command from a clean environment:
+
+```sh
+uv build
+uv pip install dist/*.whl
+python -m privilege_broker.pve.dispatcher --help
+```
+
+The dispatcher CLI takes `--policy`, `--lease-public-key`, `--claim-db` and
+`--lxc-conf-dir`, with optional `--sudo-path`, `--pct-path` and
+`--command-timeout`. Every other interface is a library call whose configuration
+is explicit constructor input.
+
+### Known limits
+
+- Pre-release: the generic execution-outcome API (task 5.1's follow-on) is not
+  designed yet, and no consumer has been cut over.
+- At-most-once dispatch is bound to one host and one claim database; a
+  migration-capable target needs broker-side executor binding first.
+- The default dispatcher capture adapter requires POSIX pipes, and `pct`,
+  `sudo`, TLS, trust roots and the state directory are deployer-owned.
+- WebAuthn coverage uses software authenticators; no browser or hardware-passkey
+  acceptance is claimed.
+- No tag, package publication, container image or deployment is produced by the
+  source repository alone.
+
 ## Compatibility and extraction adaptations
 
 The wire versions remain `pve-operate-v1`, `pve-approval-v1` and
