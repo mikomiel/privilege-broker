@@ -264,8 +264,15 @@ At-most-once dispatch is bound to one host: run exactly one eligible executor
 per target for the lease lifetime, and never place the SQLite database on a
 network filesystem. A target that can move to another dispatcher inside that
 lifetime is out of scope until broker-side executor binding exists.
-`ct.snapshot_prune` is refused before any claim until OpenSpec task 4.3 lands, so
-a broker-approved prune fails closed rather than running unpreserved logic.
+
+`ct.snapshot_prune` is the one action with no fixed argv: it lists the
+container's snapshots and deletes only broker-owned `broker-*` snapshots older
+than the policy's `snapshot_retention_days`. Retention never comes from the
+request, unrelated snapshots are never candidates, and every `pct` call shares
+one `command_timeout` budget. The report carries `deleted`, `kept`, `failed` and
+`kept_over_limit`; a failed delete makes the exit code non-zero, and a delete
+that times out may still complete, so it is reported as an unknown outcome. The
+approval page states the retention the policy will apply.
 
 ## Certificate source restriction
 

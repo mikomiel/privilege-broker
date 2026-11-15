@@ -13,7 +13,7 @@ Notification delivery is separate and never an authorization decision.
 - `privilege_broker.pve.client`: mTLS broker HTTP client; the endpoint and trust material are explicit constructor input and transient failures classify separately from final refusals.
 - `privilege_broker.pve.bridge`: agent-side request creation with an ephemeral Ed25519 key, strict response validation and pending-input publication.
 - `privilege_broker.pve.worker`: poll-and-dispatch worker that fetches the lease and the one-time certificate, tries the configured nodes in order and writes terminal result files.
-- `privilege_broker.pve.dispatcher`: target-side typed dispatcher that re-verifies the lease and target policy, atomically claims it in a durable SQLite store and runs one fixed argv.
+- `privilege_broker.pve.dispatcher`: target-side typed dispatcher that re-verifies the lease and target policy, atomically claims it in a durable SQLite store and runs one fixed argv or the policy-bounded snapshot prune.
 
 The approval service requires explicitly supplied store, signer and target
 policy. Its environment factory requires private deployment configuration;
@@ -25,8 +25,8 @@ Browser approval signs a short-lived PVE lease but returns only approval
 status. The bound agent can fetch that lease and a restricted SSH certificate.
 The signer runs only local `ssh-keygen`, not an SSH connection or PVE command.
 The bridge, client, worker and dispatcher exist. The generic execution-outcome
-API and policy-bounded snapshot pruning do not (OpenSpec tasks 4.3 and 5.1).
-An `approved` request is not an executed operation.
+API does not (OpenSpec task 5.1). An `approved` request is not an executed
+operation.
 
 The bridge, client and worker take explicit configuration only: they read no
 environment variable and carry no built-in address, path or identity, so a
@@ -108,8 +108,8 @@ touching the claim store and the worker may present the same lease to the next
 node. It then claims the lease with an atomic `INSERT OR IGNORE` before running
 one fixed argv through `sudo pct`, never a shell. A repeat presentation returns
 the stored result with `replayed`; a claim left `CLAIMED` by a dead process
-becomes `UNKNOWN` and is never re-executed. `ct.snapshot_prune` is refused
-before any claim until task 4.3 implements it.
+becomes `UNKNOWN` and is never re-executed. `ct.snapshot_prune` deletes only broker-owned snapshots older than the policy
+retention and reports what it deleted, kept, failed or deferred.
 
 The active [OpenSpec change](../openspec/changes/extract-pve-foundation/proposal.md)
 owns the remaining dispatcher pruning work, the outcome interfaces and

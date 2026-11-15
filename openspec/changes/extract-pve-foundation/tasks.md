@@ -26,7 +26,7 @@ source evidence. Each unfinished task links to its tracking issue.
 
 - [x] 4.1 Extract the agent bridge, client and worker using explicit endpoints, trust and state configuration; verify pre-dispatch transient retry, expiry, lost-certificate terminal failure and no secret-bearing output. [Issue #8](https://github.com/mikomiel/privilege-broker/issues/8).
 - [x] 4.2 Extract the typed dispatcher and replay store; verify fixed argv, current policy, source/certificate constraints, wrong-node routing, concurrent single claim and restart replay protection. [Issue #9](https://github.com/mikomiel/privilege-broker/issues/9). The dispatcher and its SQLite claim store live in `privilege_broker/pve/dispatcher.py`; `ct.snapshot_prune` remains task 4.3 and is refused before any claim.
-- [ ] 4.3 Preserve policy-bounded snapshot pruning and its approval display; verify synthetic old/unrelated/retained snapshot cases and update PVE operation documentation. [Issue #10](https://github.com/mikomiel/privilege-broker/issues/10).
+- [x] 4.3 Preserve policy-bounded snapshot pruning and its approval display; verify synthetic old/unrelated/retained snapshot cases and update PVE operation documentation. [Issue #10](https://github.com/mikomiel/privilege-broker/issues/10). Pruning is in `privilege_broker/pve/dispatcher.py`; retention comes from policy and the approval page states it.
 
 ## 5. Product acceptance and handoff
 

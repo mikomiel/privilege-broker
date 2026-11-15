@@ -13,6 +13,8 @@ import json
 import os
 import sqlite3
 import threading
+import time
+from dataclasses import replace
 from pathlib import Path
 from subprocess import CompletedProcess
 
@@ -406,15 +408,6 @@ def test_separate_claim_databases_do_not_share_claims(config, private_key, tmp_p
     assert _run(config, private_key, _request_json(private_key), runner)[0] == 0
     assert _run(other, private_key, _request_json(private_key), runner)[0] == 0
     assert len(runner.calls) == 2
-
-
-def test_prune_is_refused_before_claiming(config, private_key) -> None:
-    runner = Runner([])
-    exit_code, output = _run(config, private_key, _request_json(private_key, "ct.snapshot_prune"), runner)
-    assert exit_code == 1
-    assert "not dispatched by this extraction stage" in output["error"]
-    assert runner.calls == []
-    assert not config.claim_db_path.exists()
 
 
 @pytest.mark.parametrize(
@@ -826,6 +819,115 @@ def test_worker_publishes_unknown_from_real_dispatcher_output(config, private_ke
     assert result["dispatcher_outcome"] == "unknown"
     # One node only: uncertainty never triggers failover or a redispatch.
     assert len(ssh.calls) == 1
+
+
+def _snapshot_listing(entries: list[tuple[str, float]]) -> str:
+    lines = []
+    for name, timestamp in entries:
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp))
+        lines.append(f"  `-> {name}  {stamp}  synthetic")
+    lines.append("  `-> current                                  ")
+    return "\n".join(lines) + "\n"
+
+
+OLD = NOW - 10 * 86400
+RECENT = NOW - 2 * 86400
+
+
+def test_prune_deletes_only_old_broker_snapshots(config, private_key) -> None:
+    config = replace(config, command_timeout=180)
+    listing = _snapshot_listing(
+        [("broker-aaaaaaaaaaaa", OLD), ("broker-bbbbbbbbbbbb", RECENT), ("manual-backup", OLD)]
+    )
+    runner = Runner([CompletedProcess([], 0, listing, "")] + [CompletedProcess([], 0, "", "")] * 3)
+    exit_code, output = _run(config, private_key, _request_json(private_key, "ct.snapshot_prune"), runner)
+    assert exit_code == 0
+    assert output["deleted"] == ["broker-aaaaaaaaaaaa"]
+    # Unrelated snapshots are never candidates and never reported.
+    assert output["kept"] == ["broker-bbbbbbbbbbbb"]
+    assert "manual-backup" not in json.dumps(output)
+    assert output["failed"] == [] and output["kept_over_limit"] == []
+    assert runner.calls[0][0] == ["/usr/bin/sudo", "/usr/sbin/pct", "listsnapshot", "9001"]
+    assert [call[0] for call in runner.calls[1:]] == [
+        ["/usr/bin/sudo", "/usr/sbin/pct", "delsnapshot", "9001", "broker-aaaaaaaaaaaa"]
+    ]
+
+
+def test_prune_retention_comes_from_policy(config, private_key) -> None:
+    config = replace(config, command_timeout=180)
+    config.policy_path.write_text(
+        json.dumps({"version": 2, "grants": {"ct.snapshot_prune": [CT_ID]}, "snapshot_retention_days": 3}),
+        encoding="utf-8",
+    )
+    listing = _snapshot_listing([("broker-aaaaaaaaaaaa", NOW - 4 * 86400), ("broker-bbbbbbbbbbbb", RECENT)])
+    runner = Runner([CompletedProcess([], 0, listing, "")] + [CompletedProcess([], 0, "", "")] * 2)
+    exit_code, output = _run(config, private_key, _request_json(private_key, "ct.snapshot_prune"), runner)
+    assert exit_code == 0
+    assert output["deleted"] == ["broker-aaaaaaaaaaaa"]
+    assert output["kept"] == ["broker-bbbbbbbbbbbb"]
+
+
+def test_prune_listing_failure_is_final(config, private_key) -> None:
+    config = replace(config, command_timeout=180)
+    runner = Runner([CompletedProcess([], 2, "", "listing failed")])
+    exit_code, output = _run(config, private_key, _request_json(private_key, "ct.snapshot_prune"), runner)
+    assert exit_code == 2
+    assert output["stderr"] == "listing failed"
+    assert len(runner.calls) == 1
+    with ClaimStore(config.claim_db_path) as store:
+        stored = store.get(LEASE_ID)
+    assert stored is not None and stored["state"] == "FAILED"
+
+
+def test_prune_budget_exhaustion_marks_the_remainder(config, private_key, monkeypatch) -> None:
+    config = replace(config, command_timeout=180)
+    from privilege_broker.pve import dispatcher as dispatcher_module
+
+    monkeypatch.setattr(dispatcher_module, "PRUNE_MIN_DELETE_SECONDS", 10_000)
+    listing = _snapshot_listing([("broker-aaaaaaaaaaaa", OLD), ("broker-bbbbbbbbbbbb", OLD)])
+    runner = Runner([CompletedProcess([], 0, listing, "")])
+    exit_code, output = _run(config, private_key, _request_json(private_key, "ct.snapshot_prune"), runner)
+    assert exit_code == 0
+    assert output["deleted"] == []
+    assert output["kept_over_limit"] == ["broker-aaaaaaaaaaaa", "broker-bbbbbbbbbbbb"]
+    assert len(runner.calls) == 1
+
+
+def test_prune_delete_timeout_is_unknown(config, private_key) -> None:
+    config = replace(config, command_timeout=180)
+    from subprocess import TimeoutExpired
+
+    listing = _snapshot_listing([("broker-aaaaaaaaaaaa", OLD), ("broker-bbbbbbbbbbbb", OLD)])
+    runner = Runner(
+        [CompletedProcess([], 0, listing, ""), TimeoutExpired(cmd="pct", timeout=30), CompletedProcess([], 0, "", "")]
+    )
+    exit_code, output = _run(config, private_key, _request_json(private_key, "ct.snapshot_prune"), runner)
+    assert exit_code == 1
+    assert output["outcome"] == "unknown"
+    assert output["failed"] == ["broker-aaaaaaaaaaaa"]
+    assert output["kept_over_limit"] == ["broker-bbbbbbbbbbbb"]
+    with ClaimStore(config.claim_db_path) as store:
+        stored = store.get(LEASE_ID)
+    assert stored is not None and stored["state"] == "UNKNOWN"
+
+
+def test_prune_replay_returns_the_stored_report(config, private_key) -> None:
+    config = replace(config, command_timeout=180)
+    listing = _snapshot_listing([("broker-aaaaaaaaaaaa", OLD)])
+    runner = Runner([CompletedProcess([], 0, listing, ""), CompletedProcess([], 0, "", "")])
+    text = _request_json(private_key, "ct.snapshot_prune")
+    first_exit, first = _run(config, private_key, text, runner)
+    assert first_exit == 0
+
+    replay = Runner([])
+    with ClaimStore(config.claim_db_path) as store:
+        second_exit, second = dispatch(
+            parse_request(text), config, public_key=private_key.public_key(), now=NOW + 1, store=store, runner=replay
+        )
+    assert second_exit == 0
+    assert second["replayed"] is True
+    assert json.loads(second["stdout"]) == json.loads(first["stdout"])
+    assert replay.calls == []
 
 
 def test_verify_lease_returns_claims(private_key) -> None:

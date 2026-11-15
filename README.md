@@ -11,8 +11,9 @@ general shell or infrastructure-wide credentials.
 **Status: pre-release PVE extraction.** The package includes a SQLite-backed
 WebAuthn service, passkey UI, server-owned Discord notifications, restricted
 SSH certificate signing, the agent-side bridge, client and worker, and the
-target-side typed dispatcher with a durable SQLite claim store. The generic
-execution-outcome API and policy-bounded snapshot pruning are not included yet.
+target-side typed dispatcher with a durable SQLite claim store and
+policy-bounded snapshot pruning. The generic execution-outcome API is not
+included yet.
 No existing deployment has switched to it, and no product release has been
 published.
 
