@@ -52,9 +52,14 @@ It is a library demonstration, not an authorization service.
 
 ```sh
 uv build
-uv pip install dist/*.whl
-python -m privilege_broker.pve.dispatcher --help
+uv venv /tmp/privilege-broker-venv
+uv pip install --python /tmp/privilege-broker-venv/bin/python dist/*.whl
+cd /tmp
+/tmp/privilege-broker-venv/bin/python -I -m privilege_broker.pve.dispatcher --help
 ```
+
+The second interpreter invocation runs outside the checkout with `-I`, so the
+source tree cannot shadow the installed wheel.
 
 The wheel is self-contained Python with explicit configuration: no private
 path, host name, credential or service is required to install it or to read the

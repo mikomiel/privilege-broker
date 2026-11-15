@@ -29,13 +29,16 @@ def test_documented_module_imports(name: str) -> None:
     assert importlib.import_module(name)
 
 
-def test_dispatcher_cli_documents_its_configuration() -> None:
+def test_dispatcher_cli_documents_its_configuration(tmp_path) -> None:
+    # Run isolated (-I) outside the checkout, so the source tree cannot shadow
+    # the module the way an installed wheel would be imported.
     result = subprocess.run(
-        [sys.executable, "-m", "privilege_broker.pve.dispatcher", "--help"],
+        [sys.executable, "-I", "-m", "privilege_broker.pve.dispatcher", "--help"],
         capture_output=True,
         text=True,
         timeout=60,
         check=False,
+        cwd=tmp_path,
     )
     assert result.returncode == 0
     for flag in (

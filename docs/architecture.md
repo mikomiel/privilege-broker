@@ -72,7 +72,7 @@ Python 3.11 or newer. These are the supported surfaces at this stage:
 | Interface | Entry point | Purpose |
 | --- | --- | --- |
 | Approval service | `privilege_broker.pve.service.create_broker_app(...)` | FastAPI app over an explicit `BrokerStore`, `LeaseSigner`, identity extractor, policy and optional certificate signer |
-| Approval HTTP API | `/v1/broker/requests`, `/approval/options`, `/approval`, `/denial`, `/lease`, `/certificate`, `/status` | Typed request, passkey approval, one-time lease and certificate, lifecycle status |
+| Approval HTTP API | `POST /v1/broker/requests`, `GET /v1/broker/requests/{id}`, `GET .../{id}/approval/options`, `POST .../{id}/approval`, `POST .../{id}/denial`, `GET .../{id}/lease`, `POST .../{id}/certificate`, `GET .../{id}/status`, `POST .../{id}/cancel`, `GET /v1/broker/lease-public-key`, `POST /v1/broker/enrollments` and its options/complete routes | Typed request, passkey approval and enrollment, one-time lease and certificate, lifecycle status |
 | Agent bridge | `privilege_broker.pve.bridge.ApprovalBridge` with `BridgeConfig` | Create a typed request, publish pending input atomically, read the worker status |
 | Broker client | `privilege_broker.pve.client.BrokerClient` with `BrokerClientConfig` | mTLS HTTPS calls with explicit trust material; redirects refused |
 | Execution worker | `privilege_broker.pve.worker.WorkerConfig`, `process_pending_once`, `run` | Poll approvals, fetch the lease and certificate, dispatch, publish the result |
@@ -84,9 +84,14 @@ Install and inspect the command from a clean environment:
 
 ```sh
 uv build
-uv pip install dist/*.whl
-python -m privilege_broker.pve.dispatcher --help
+uv venv /tmp/privilege-broker-venv
+uv pip install --python /tmp/privilege-broker-venv/bin/python dist/*.whl
+cd /tmp
+/tmp/privilege-broker-venv/bin/python -I -m privilege_broker.pve.dispatcher --help
 ```
+
+The second interpreter invocation runs outside the checkout with `-I`, so the
+source tree cannot shadow the installed wheel.
 
 The dispatcher CLI takes `--policy`, `--lease-public-key`, `--claim-db` and
 `--lxc-conf-dir`, with optional `--sudo-path`, `--pct-path` and
