@@ -1025,8 +1025,8 @@ def test_replay_of_unknown_prune_returns_the_partial_report(config, private_key)
     assert replay.calls == []
 
 
-def test_old_schema_migration_is_safe_under_concurrent_open(tmp_path) -> None:
-    db = tmp_path / "claims.sqlite3"
+def _write_legacy_claim_schema(db: Path) -> None:
+    """Create the claim table without ``report``, as an older dispatcher left it."""
     with sqlite3.connect(db) as legacy:
         legacy.executescript(
             """
@@ -1037,6 +1037,20 @@ def test_old_schema_migration_is_safe_under_concurrent_open(tmp_path) -> None:
             );
             """
         )
+
+
+def _hold_claim_database(db: Path, *, insert: bool = True) -> sqlite3.Connection:
+    """Open *db* and take its write lock, the state a starting peer collides with."""
+    peer = sqlite3.connect(db, check_same_thread=False)
+    peer.execute("BEGIN IMMEDIATE")
+    if insert:
+        peer.execute("INSERT INTO dispatch_claims (lease_id, action, ct_id, created_at) VALUES ('peer', 'a', 1, 0)")
+    return peer
+
+
+def test_old_schema_migration_is_safe_under_concurrent_open(tmp_path) -> None:
+    db = tmp_path / "claims.sqlite3"
+    _write_legacy_claim_schema(db)
     barrier = threading.Barrier(2)
     failures: list[Exception] = []
 
@@ -1054,7 +1068,207 @@ def test_old_schema_migration_is_safe_under_concurrent_open(tmp_path) -> None:
     for thread in threads:
         thread.join(timeout=10)
 
+    # A thread that outlived the join would otherwise pass on an empty failures list.
+    assert [thread.is_alive() for thread in threads] == [False, False]
     assert failures == []
+    with sqlite3.connect(db) as check:
+        columns = {row[1] for row in check.execute("PRAGMA table_info(dispatch_claims)")}
+    assert "report" in columns
+
+
+def test_schema_bootstrap_waits_for_a_short_concurrent_write_lock(tmp_path, monkeypatch) -> None:
+    """A peer holding the database briefly must not fail the second opener.
+
+    SQLite answers ``PRAGMA journal_mode=WAL`` with SQLITE_BUSY without running
+    the busy handler, so before the retry a dispatcher starting beside a writer
+    died with "database is locked" instead of waiting out the short lock. The
+    peer is released only after the real lock error is observed, so a scheduler
+    delay cannot make the test pass without contending.
+    """
+    from privilege_broker.pve import dispatcher as dispatcher_module
+
+    monkeypatch.setattr(dispatcher_module, "_SCHEMA_DEADLINE_SECONDS", 5.0, raising=False)
+    db = tmp_path / "claims.sqlite3"
+    _write_legacy_claim_schema(db)
+    peer = _hold_claim_database(db)
+    contended = threading.Event()
+    attempts: list[int] = []
+    original = dispatcher_module.ClaimStore._apply_schema
+
+    def observe(store: ClaimStore, deadline: float) -> None:
+        attempts.append(1)
+        try:
+            original(store, deadline)
+        except sqlite3.OperationalError as exc:
+            if "locked" in str(exc):
+                contended.set()
+            raise
+
+    monkeypatch.setattr(dispatcher_module.ClaimStore, "_apply_schema", observe)
+    outcome: list[BaseException | None] = []
+
+    def open_store() -> None:
+        try:
+            with ClaimStore(db) as store:
+                assert store.synchronous_level == 2
+            outcome.append(None)
+        except BaseException as exc:  # noqa: BLE001 - reported by the assertion below
+            outcome.append(exc)
+
+    thread = threading.Thread(target=open_store)
+    thread.start()
+    try:
+        assert contended.wait(timeout=5), "the peer lock produced no observed contention"
+        peer.rollback()
+    finally:
+        thread.join(timeout=10)
+        peer.close()
+
+    assert not thread.is_alive()
+    assert outcome == [None]
+    assert len(attempts) >= 2
+    with sqlite3.connect(db) as check:
+        columns = {row[1] for row in check.execute("PRAGMA table_info(dispatch_claims)")}
+    assert "report" in columns
+
+
+def test_schema_bootstrap_bounds_the_migration_lock_wait_by_the_budget(tmp_path, monkeypatch) -> None:
+    """A held database must not cost a second statement timeout after the budget.
+
+    The file is already WAL, so the journal-mode pragma succeeds and the attempt
+    reaches ``BEGIN IMMEDIATE``. A peer that keeps its write lock is then waited
+    out for what is left of the bootstrap budget, not for the ordinary statement
+    timeout the connection carries for claims and completions.
+    """
+    from privilege_broker.pve import dispatcher as dispatcher_module
+
+    monkeypatch.setattr(dispatcher_module, "_SCHEMA_DEADLINE_SECONDS", 0.4, raising=False)
+    db = tmp_path / "claims.sqlite3"
+    _write_legacy_claim_schema(db)
+    with sqlite3.connect(db) as wal:
+        assert wal.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    peer = _hold_claim_database(db)
+    started = time.monotonic()
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+            ClaimStore(db)
+    finally:
+        elapsed = time.monotonic() - started
+        peer.rollback()
+        peer.close()
+
+    # The journal-mode and table statements cannot wait here: the file is WAL
+    # and the table exists, so the migration lock is the only blocking step.
+    assert 0.3 <= elapsed < 3.0, elapsed
+    # The refused attempt leaves no lock behind: the next open migrates the column.
+    with ClaimStore(db) as store:
+        assert store.synchronous_level == 2
+    with sqlite3.connect(db) as check:
+        columns = {row[1] for row in check.execute("PRAGMA table_info(dispatch_claims)")}
+    assert "report" in columns
+
+
+def test_schema_bootstrap_shares_one_budget_across_blocking_statements(tmp_path, monkeypatch) -> None:
+    """Table creation and the migration draw on one budget, not one each.
+
+    SQLite applies the busy timeout per statement, so a bootstrap that sets it
+    once can wait the whole budget at ``CREATE TABLE`` and the whole budget again
+    at ``BEGIN IMMEDIATE``. The peer here is released while table creation waits,
+    so the migration must be given only what is left.
+    """
+    from privilege_broker.pve import dispatcher as dispatcher_module
+
+    budget = 2.0
+    monkeypatch.setattr(dispatcher_module, "_SCHEMA_DEADLINE_SECONDS", budget, raising=False)
+    db = tmp_path / "claims.sqlite3"
+    with sqlite3.connect(db) as empty:
+        assert empty.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    settings: list[float] = []
+    table_wait = threading.Event()
+    original = dispatcher_module.ClaimStore._set_busy_timeout
+
+    def record(store: ClaimStore, seconds: float) -> None:
+        settings.append(seconds)
+        # The second setting precedes CREATE TABLE, so the peer is holding the
+        # lock there and the migration that follows has a reduced budget.
+        if len(settings) == 2:
+            table_wait.set()
+        original(store, seconds)
+
+    monkeypatch.setattr(dispatcher_module.ClaimStore, "_set_busy_timeout", record)
+    peer = _hold_claim_database(db, insert=False)
+    restored: list[int] = []
+    failures: list[BaseException] = []
+
+    def open_store() -> None:
+        try:
+            with ClaimStore(db) as store:
+                restored.append(store.busy_timeout_milliseconds)
+        except BaseException as exc:  # noqa: BLE001 - reported by the assertion below
+            failures.append(exc)
+
+    thread = threading.Thread(target=open_store)
+    thread.start()
+    try:
+        assert table_wait.wait(timeout=5), "table creation never waited"
+        time.sleep(0.5)
+        peer.rollback()
+    finally:
+        thread.join(timeout=10)
+        peer.close()
+
+    assert not thread.is_alive()
+    assert failures == []
+    # A descheduled opener may have spent a little of the budget already.
+    assert 0 < settings[0] <= budget
+    assert 0 < settings[2] <= budget - 0.4, settings
+    # Bootstrap restores the ordinary statement timeout for claims and completions.
+    assert settings[-1] == pytest.approx(dispatcher_module._STATEMENT_TIMEOUT_SECONDS)
+    assert restored == [int(dispatcher_module._STATEMENT_TIMEOUT_SECONDS * 1000)]
+    with sqlite3.connect(db) as check:
+        columns = {row[1] for row in check.execute("PRAGMA table_info(dispatch_claims)")}
+    assert "report" in columns
+
+
+def test_schema_bootstrap_fails_closed_when_the_lock_outlives_the_deadline(tmp_path, monkeypatch) -> None:
+    """The retry is bounded: a lock that never clears raises, it does not hang."""
+    from privilege_broker.pve import dispatcher as dispatcher_module
+
+    monkeypatch.setattr(dispatcher_module, "_SCHEMA_DEADLINE_SECONDS", 0.1, raising=False)
+    db = tmp_path / "claims.sqlite3"
+    _write_legacy_claim_schema(db)
+    peer = _hold_claim_database(db)
+    outcome: list[BaseException | None] = []
+
+    def open_store() -> None:
+        try:
+            ClaimStore(db).close()
+            outcome.append(None)
+        except BaseException as exc:  # noqa: BLE001 - reported by the assertion below
+            outcome.append(exc)
+
+    try:
+        thread = threading.Thread(target=open_store)
+        thread.start()
+        # A watchdog: a broken deadline must fail this test, not stall the runner.
+        thread.join(timeout=5)
+        assert not thread.is_alive(), "the bootstrap deadline did not bound the open"
+    finally:
+        peer.rollback()
+        peer.close()
+
+    assert len(outcome) == 1
+    refusal = outcome[0]
+    assert isinstance(refusal, sqlite3.OperationalError)
+    assert "database is locked" in str(refusal)
+
+    # The refused attempt closed its connection and left no write lock behind.
+    with sqlite3.connect(db, check_same_thread=False) as probe:
+        probe.execute("BEGIN IMMEDIATE")
+        probe.execute("ROLLBACK")
+    # It also left no half-applied schema: the next open finishes the migration.
+    with ClaimStore(db) as store:
+        assert store.synchronous_level == 2
     with sqlite3.connect(db) as check:
         columns = {row[1] for row in check.execute("PRAGMA table_info(dispatch_claims)")}
     assert "report" in columns
