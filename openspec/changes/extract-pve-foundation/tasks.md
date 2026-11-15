@@ -32,7 +32,24 @@ source evidence. Each unfinished task links to its tracking issue.
 
 - [x] 5.1 Run a synthetic end-to-end approval-to-outcome flow with real local crypto, storage and protocol handling and substituted external mutations; verify allowed, denied, expired, tampered, concurrent and uncertain outcomes with fresh-process tests. [Issue #11](https://github.com/mikomiel/privilege-broker/issues/11). Coverage is `tests/test_e2e_lifecycle.py`; the dispatcher runs as a fresh process and only the TLS transport, SSH and `pct` are substituted.
 - [x] 5.2 Verify the public product installs and checks without private paths or services; document runnable entrypoints, supported interfaces and known limits with exact source evidence. [Issue #12](https://github.com/mikomiel/privilege-broker/issues/12). Interfaces are in `docs/architecture.md#supported-interfaces`; the wheel was installed into a clean environment and the dispatcher help verified.
-- [ ] 5.3 Obtain exact-head required CI, independent approval and human merge for every executable or sensitive PR; record source and merge evidence without claiming deployment. [Issue #13](https://github.com/mikomiel/privilege-broker/issues/13).
+- [x] 5.3 Obtain exact-head required CI, independent approval and human merge for every executable or sensitive PR; record source and merge evidence without claiming deployment. [Issue #13](https://github.com/mikomiel/privilege-broker/issues/13). Evidence is the table below.
+
+## Merge evidence
+
+| PR | Reviewed head | Review | Checks | Merge commit |
+| --- | --- | --- | --- | --- |
+| #21 | `ac326997771222401b4dc12c156f5752603cfeba` | 5904405398 | 11/11 | `28f5cb45f493681874900f0445ddadb0983ab37d` |
+| #26 | `5cc4922dfc280e7f367a7527f9a659a11369fc5a` | 5906162075 | 11/11 | `73d43f412fb6e54d55a540f57fca5704e423f102` |
+| #27 | `866c57be40b26a1f3651d5e56bc1e1a1adf4f61a` | 5907597734 | 10/10 | `4ed0d1fe40ad5c9b3d0766b17f56882d83b80be5` |
+| #28 | `a353373e5d6f71a9f88e6c6680ee7ebec5f84078` | 5907885378 | 11/11 | `2fc7b5f4466dcd2b0871c3d8bbdecddd64bcdc70` |
+| #29 | `b2007fe8e7c5119463e307430c8fdf599ca29bf4` | 5909828966 | 11/11 | `879cdeb5476474f60f57a89178b626985ea07ba6` |
+| #30 | `13b48f642079970ae2c0baf6623c28f5bb105207` | 5910153635 | 11/11 | `7ec12e83b4a8a162a3d2d20a3b22c9945648e717` |
+| #31 | `b0c987f90a2d70a0ad6545c3380fd5f9d6777483` | 5910318858 | 11/11 | `0e85708e9f7103ab74aa0f6024dada0dac6e8f57` |
+
+Every row is an exact ref: the head Gandalf approved, that review's id, the
+required check runs successful on that head, and the merge commit in `main`.
+These are source and merge facts only. No deployment, consumer cutover or
+runtime acceptance follows from them.
 
 ## Workflow follow-up
 

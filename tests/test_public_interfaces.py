@@ -30,8 +30,9 @@ def test_documented_module_imports(name: str) -> None:
 
 
 def test_dispatcher_cli_documents_its_configuration(tmp_path) -> None:
-    # Run isolated (-I) outside the checkout, so the source tree cannot shadow
-    # the module the way an installed wheel would be imported.
+    # Isolated (-I) outside the checkout: proves the module entrypoint works
+    # without the checkout on sys.path. This is a CLI smoke test, not proof the
+    # built wheel installs; the clean-wheel check owns that claim.
     result = subprocess.run(
         [sys.executable, "-I", "-m", "privilege_broker.pve.dispatcher", "--help"],
         capture_output=True,
