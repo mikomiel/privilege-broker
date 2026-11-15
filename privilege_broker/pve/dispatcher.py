@@ -910,6 +910,8 @@ def main(
     parser.add_argument("--lease-public-key", required=True, type=Path, dest="lease_public_key_path")
     parser.add_argument("--claim-db", required=True, type=Path, dest="claim_db_path")
     parser.add_argument("--lxc-conf-dir", required=True, type=Path, dest="lxc_conf_dir")
+    parser.add_argument("--sudo-path", default="/usr/bin/sudo", dest="sudo_path")
+    parser.add_argument("--pct-path", default="/usr/sbin/pct", dest="pct_path")
     parser.add_argument("--command-timeout", type=int, default=180)
     arguments = parser.parse_args(argv)
 
@@ -920,6 +922,8 @@ def main(
         lease_public_key_path=arguments.lease_public_key_path,
         claim_db_path=arguments.claim_db_path,
         lxc_conf_dir=arguments.lxc_conf_dir,
+        sudo_path=arguments.sudo_path,
+        pct_path=arguments.pct_path,
         command_timeout=arguments.command_timeout,
     )
     try:

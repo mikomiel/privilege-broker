@@ -238,7 +238,9 @@ exit_code, output = dispatch(request, config, public_key=key, now=int(time.time(
 ```
 
 As a command, `python -m privilege_broker.pve.dispatcher` requires `--policy`,
-`--lease-public-key`, `--claim-db` and `--lxc-conf-dir`, and reads one request
+`--lease-public-key`, `--claim-db` and `--lxc-conf-dir`; `--sudo-path` and
+`--pct-path` override the fixed helper paths and `--command-timeout` overrides
+the operation budget. It reads one request
 from stdin. That read is bounded to 64 KiB and 10 seconds, so a caller cannot
 stream input, withhold EOF or grow the process before authorization runs. It prints one JSON document and exits with the operation's exit code,
 `1` for a refusal or `3` for `not_on_this_node`.
