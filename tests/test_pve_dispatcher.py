@@ -14,6 +14,7 @@ import os
 import sqlite3
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from subprocess import CompletedProcess
@@ -1077,27 +1078,32 @@ def test_prune_timeout_response_is_bounded(config, private_key) -> None:
     assert output["report_truncated"] is True
 
 
-def _berlin_transition_epochs() -> tuple[float, float] | None:
+@contextmanager
+def _berlin_timezone():
+    """Hold Europe/Berlin for the whole flow, then restore the host zone."""
     if not hasattr(time, "tzset"):
-        return None
+        pytest.skip("POSIX timezone support required")
     saved = os.environ.get("TZ")
     os.environ["TZ"] = "Europe/Berlin"
     time.tzset()
     try:
-        epochs = sorted(dispatcher_local_epochs("2026-10-25 02:30:00"))
+        yield
     finally:
         if saved is None:
             os.environ.pop("TZ", None)
         else:
             os.environ["TZ"] = saved
         time.tzset()
-    if len(epochs) != 2:
-        return None
-    return epochs[0], epochs[1]
+
+
+def _berlin_transition_epochs() -> tuple[float, float] | None:
+    epochs = sorted(dispatcher_local_epochs("2026-10-25 02:30:00"))
+    return (epochs[0], epochs[1]) if len(epochs) == 2 else None
 
 
 def test_repeated_local_hour_has_two_epochs() -> None:
-    pair = _berlin_transition_epochs()
+    with _berlin_timezone():
+        pair = _berlin_transition_epochs()
     if pair is None:
         pytest.skip("a DST timezone database with the Berlin transition is unavailable")
     earlier, later = pair
@@ -1105,25 +1111,52 @@ def test_repeated_local_hour_has_two_epochs() -> None:
 
 
 def test_prune_retains_a_snapshot_inside_retention_across_a_repeated_hour(config, private_key) -> None:
-    pair = _berlin_transition_epochs()
-    if pair is None:
-        pytest.skip("a DST timezone database with the Berlin transition is unavailable")
-    earlier, later = pair
-    config = replace(config, command_timeout=180)
-    config.policy_path.write_text(
-        json.dumps({"version": 2, "grants": {"ct.snapshot_prune": [CT_ID]}, "snapshot_retention_days": 1}),
-        encoding="utf-8",
-    )
-    # The cutoff sits between the two readings, so only the earlier one is "old".
-    now = int(later + 86400 - 1800)
-    listing = _snapshot_listing([("broker-aaaaaaaaaaaa", earlier)])
-    runner = Runner([CompletedProcess([], 0, listing, "")])
-    request = _request_json(private_key, "ct.snapshot_prune", issued_at=now - 60, expires_at=now + 60)
-    exit_code, output = _run(config, private_key, request, runner, now=now)
+    with _berlin_timezone():
+        pair = _berlin_transition_epochs()
+        if pair is None:
+            pytest.skip("a DST timezone database with the Berlin transition is unavailable")
+        earlier, later = pair
+        config = replace(config, command_timeout=180)
+        config.policy_path.write_text(
+            json.dumps({"version": 2, "grants": {"ct.snapshot_prune": [CT_ID]}, "snapshot_retention_days": 1}),
+            encoding="utf-8",
+        )
+        # The cutoff sits between the two readings, so only the earlier one is "old".
+        now = int(later + 86400 - 1800)
+        listing = _snapshot_listing([("broker-aaaaaaaaaaaa", earlier)])
+        runner = Runner([CompletedProcess([], 0, listing, "")])
+        request = _request_json(private_key, "ct.snapshot_prune", issued_at=now - 60, expires_at=now + 60)
+        exit_code, output = _run(config, private_key, request, runner, now=now)
     assert exit_code == 0
     assert output["deleted"] == []
     assert output["kept"] == ["broker-aaaaaaaaaaaa"]
     assert len(runner.calls) == 1
+
+
+def test_prune_nonzero_delete_is_failed(config, private_key) -> None:
+    config = replace(config, command_timeout=180)
+    listing = _snapshot_listing([("broker-aaaaaaaaaaaa", OLD)])
+    runner = Runner([CompletedProcess([], 0, listing, ""), CompletedProcess([], 1, "", "refused")])
+    exit_code, output = _run(config, private_key, _request_json(private_key, "ct.snapshot_prune"), runner)
+    assert exit_code == 1
+    assert output["failed"] == ["broker-aaaaaaaaaaaa"]
+    assert output["deleted"] == []
+
+
+def test_prune_delete_spawn_failure_is_failed(config, private_key) -> None:
+    config = replace(config, command_timeout=180)
+    listing = _snapshot_listing([("broker-aaaaaaaaaaaa", OLD)])
+
+    def spawn_failure(argv, **kwargs):
+        if argv[2] == "listsnapshot":
+            assert kwargs["timeout"] == config.command_timeout
+            return CompletedProcess(argv, 0, listing, "")
+        assert 0 < kwargs["timeout"] <= config.command_timeout
+        raise OSError("cannot execute")
+
+    exit_code, output = _run(config, private_key, _request_json(private_key, "ct.snapshot_prune"), spawn_failure)
+    assert exit_code == 1
+    assert output["failed"] == ["broker-aaaaaaaaaaaa"]
 
 
 def test_verify_lease_returns_claims(private_key) -> None:
