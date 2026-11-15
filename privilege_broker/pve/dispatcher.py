@@ -92,6 +92,8 @@ PRUNE_ACTION = "ct.snapshot_prune"
 _OUTPUT_LIMIT = 4096
 #: Byte limit for the durable structured report.
 _REPORT_LIMIT = 64 * 1024
+#: Entries kept per report list; the worker captures at most 64 KiB combined.
+_REPORT_ENTRIES = 256
 #: A delete does not start with less prune budget left than this.
 PRUNE_MIN_DELETE_SECONDS = 30
 #: One dated entry of ``pct listsnapshot``; ``current`` has no time and is skipped.
@@ -391,10 +393,21 @@ class ClaimStore:
             self._connection.close()
             raise
         # A structured report is stored beside the excerpt, so a replay returns
-        # the same arrays even when the excerpt itself is truncated.
-        columns = {row["name"] for row in self._connection.execute("PRAGMA table_info(dispatch_claims)")}
-        if "report" not in columns:
-            self._connection.execute("ALTER TABLE dispatch_claims ADD COLUMN report TEXT")
+        # the same arrays even when the excerpt itself is truncated. Inspect and
+        # migrate under the database lock: two dispatchers may open at once.
+        try:
+            self._connection.execute("BEGIN IMMEDIATE")
+            columns = {row["name"] for row in self._connection.execute("PRAGMA table_info(dispatch_claims)")}
+            if "report" not in columns:
+                self._connection.execute("ALTER TABLE dispatch_claims ADD COLUMN report TEXT")
+            self._connection.execute("COMMIT")
+        except BaseException:
+            try:
+                self._connection.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            self._connection.close()
+            raise
         try:
             db_path.chmod(0o600)
         except OSError:
@@ -450,7 +463,7 @@ class ClaimStore:
                 "WHERE lease_id = ? AND state = 'CLAIMED'",
                 (now, lease_id),
             )
-        return ("UNKNOWN", None)
+        return ("UNKNOWN", {"report": row["report"]})
 
     def complete(
         self,
@@ -574,6 +587,24 @@ def prune_snapshots(
 
     state = "UNKNOWN" if timed_out else "FAILED" if report["failed"] else "SUCCEEDED"
     return (state, 1 if report["failed"] else 0, report, _truncate("\n".join(errors)))
+
+
+def bound_report(report: dict[str, list[str]]) -> dict[str, Any]:
+    """Keep the serialized response below the worker's combined capture limit.
+
+    Each list is capped and the omitted count is explicit, so a large prune is
+    reported as a bounded, valid document instead of an unparseable truncation.
+    """
+    bounded: dict[str, Any] = {}
+    omitted = False
+    for key, names in report.items():
+        bounded[key] = names[:_REPORT_ENTRIES]
+        if len(names) > _REPORT_ENTRIES:
+            bounded[f"{key}_omitted"] = len(names) - _REPORT_ENTRIES
+            omitted = True
+    if omitted:
+        bounded["report_truncated"] = True
+    return bounded
 
 
 def _refusal(message: str) -> tuple[int, dict[str, Any]]:
@@ -705,13 +736,22 @@ def dispatch(
                 },
             )
         if state == "UNKNOWN":
-            return _uncertain("previous dispatch outcome is unknown; it is never retried")
+            unknown: dict[str, Any] = {}
+            if isinstance(stored, dict) and isinstance(stored.get("report"), str):
+                try:
+                    parsed_unknown = json.loads(stored["report"])
+                except ValueError:
+                    parsed_unknown = None
+                if isinstance(parsed_unknown, dict):
+                    unknown = parsed_unknown
+            return _uncertain("previous dispatch outcome is unknown; it is never retried", **unknown)
 
         if request.action == PRUNE_ACTION:
             prune_state, prune_exit, report, errors = prune_snapshots(
                 config, request.ct_id, policy.snapshot_retention_days, now, runner
             )
-            stored_report = json.dumps(report, sort_keys=True)
+            public_report = bound_report(report)
+            stored_report = json.dumps(public_report, sort_keys=True)
             if not record(prune_state, prune_exit, stored_report, errors, report=stored_report):
                 return _uncertain("snapshot prune ran but its result could not be recorded; outcome unknown", **report)
             if prune_state == "UNKNOWN":
@@ -723,7 +763,7 @@ def dispatch(
                     "stdout": _truncate(stored_report),
                     "stderr": _truncate(errors),
                     "lease_id": request.lease.lease_id,
-                    **report,
+                    **public_report,
                 },
             )
 

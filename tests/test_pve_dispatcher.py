@@ -986,6 +986,76 @@ def test_prune_report_survives_replay_beyond_the_excerpt_limit(config, private_k
     assert replay.calls == []
 
 
+def test_prune_report_is_bounded_below_the_transport_limit(config, private_key) -> None:
+    config = replace(config, command_timeout=180)
+    names = [f"broker-{index:012x}" for index in range(2800)]
+    listing = _snapshot_listing([(name, RECENT) for name in names])
+    runner = Runner([CompletedProcess([], 0, listing, "")])
+    exit_code, output = _run(config, private_key, _request_json(private_key, "ct.snapshot_prune"), runner)
+    assert exit_code == 0
+    assert len(json.dumps(output).encode()) < 64 * 1024
+    assert len(output["kept"]) == 256
+    assert output["kept_omitted"] == 2800 - 256
+    assert output["report_truncated"] is True
+
+
+def test_replay_of_unknown_prune_returns_the_partial_report(config, private_key) -> None:
+    from subprocess import TimeoutExpired
+
+    config = replace(config, command_timeout=180)
+    listing = _snapshot_listing([("broker-aaaaaaaaaaaa", OLD), ("broker-bbbbbbbbbbbb", OLD)])
+    runner = Runner([CompletedProcess([], 0, listing, ""), TimeoutExpired(cmd="pct", timeout=30)])
+    text = _request_json(private_key, "ct.snapshot_prune")
+    first_exit, first = _run(config, private_key, text, runner)
+    assert first_exit == 1 and first["outcome"] == "unknown"
+
+    replay = Runner([])
+    with ClaimStore(config.claim_db_path) as store:
+        exit_code, output = dispatch(
+            parse_request(text), config, public_key=private_key.public_key(), now=NOW + 1, store=store, runner=replay
+        )
+    assert exit_code == 1
+    assert output["outcome"] == "unknown"
+    assert output["failed"] == ["broker-aaaaaaaaaaaa"]
+    assert output["kept_over_limit"] == ["broker-bbbbbbbbbbbb"]
+    assert replay.calls == []
+
+
+def test_old_schema_migration_is_safe_under_concurrent_open(tmp_path) -> None:
+    db = tmp_path / "claims.sqlite3"
+    with sqlite3.connect(db) as legacy:
+        legacy.executescript(
+            """
+            CREATE TABLE dispatch_claims (
+              lease_id TEXT PRIMARY KEY, action TEXT NOT NULL, ct_id INTEGER NOT NULL,
+              state TEXT NOT NULL DEFAULT 'CLAIMED', exit_code INTEGER, stdout TEXT,
+              stderr TEXT, created_at INTEGER NOT NULL, completed_at INTEGER
+            );
+            """
+        )
+    barrier = threading.Barrier(2)
+    failures: list[Exception] = []
+
+    def open_store() -> None:
+        try:
+            barrier.wait(timeout=5)
+            with ClaimStore(db) as store:
+                assert store.synchronous_level == 2
+        except Exception as exc:  # noqa: BLE001 - reported by the assertion below
+            failures.append(exc)
+
+    threads = [threading.Thread(target=open_store) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert failures == []
+    with sqlite3.connect(db) as check:
+        columns = {row[1] for row in check.execute("PRAGMA table_info(dispatch_claims)")}
+    assert "report" in columns
+
+
 def test_verify_lease_returns_claims(private_key) -> None:
     claims = _lease_claims()
     signature = private_key.sign(canonical_json(claims).encode("ascii"))
