@@ -315,3 +315,26 @@ FastAPI owns after-response delivery tasks. This is not a durable notification
 queue: a crash can lose delivery, and an HTTP response is not evidence that a
 message reached an operator. Approval, notification and execution remain
 separate states. No Discord or PVE request is made by the test suite.
+
+## Container image
+
+CI publishes `ghcr.io/mikomiel/privilege-broker` for `linux/amd64` and
+`linux/arm64`. Pin the digest, never a tag: tags are rebuilt and a digest
+identifies the exact bytes an estate runs. The build records the digest in the
+workflow summary.
+
+The image runs the approval service as a non-root user and installs the wheel
+from the repository source. It reads its configuration from the same
+environment variables as a direct install, so the service definition and the
+policy are unchanged. It binds `127.0.0.1:8940`, which is why the container is
+expected to run with host networking behind the host's TLS-terminating proxy;
+publishing the port instead would bypass the frontend trust boundary.
+
+Give the container a writable state directory for the approval database and
+mount key material read-only. With `PYTHONDONTWRITEBYTECODE` set by the image,
+a read-only root filesystem is supported.
+
+The dispatcher and the worker stay host-side executables. They need `pct`,
+`sudo` and the SSH user CA, and the wire contract assumes the dispatcher runs
+on the Proxmox host; putting them in this container would move the trust
+boundary rather than package it.
