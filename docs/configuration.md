@@ -319,9 +319,20 @@ separate states. No Discord or PVE request is made by the test suite.
 ## Container image
 
 CI publishes `ghcr.io/mikomiel/privilege-broker` for `linux/amd64` and
-`linux/arm64`. Pin the digest, never a tag: tags are rebuilt and a digest
-identifies the exact bytes an estate runs. The build records the digest in the
-workflow summary.
+`linux/arm64`. Publication happens only from a `v*` release tag, the one
+release-please creates from a human-merged release PR; a feature merge never
+publishes. `latest` moves only for a stable `vX.Y.Z` tag. Pull requests build
+one platform, load it and smoke-import the service module as a non-root user.
+
+Pin the digest, never a tag: tags are rebuilt and a digest identifies the exact
+bytes an estate runs. The build emits an SBOM and a provenance attestation,
+records the digest in the job summary, and verifies that the digest pulls
+anonymously and that `gh attestation verify` accepts it. The image also carries
+`org.opencontainers.image.source` and `.revision` labels.
+
+Retention and digest deprecation have no owner yet: there is no garbage
+collection or deletion procedure, so a digest must be treated as permanent
+until that policy exists. Do not delete or overwrite a published tag.
 
 The image runs the approval service as a non-root user and installs the wheel
 from the repository source. It reads its configuration from the same
