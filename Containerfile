@@ -14,7 +14,14 @@ FROM python:3.12-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    TMPDIR=/tmp
+
+# The approval service signs SSH certificates by running ssh-keygen, so the
+# executable is a runtime dependency, not a host-side one.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends openssh-client \
+ && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd --system --gid 10001 broker \
  && useradd --system --uid 10001 --gid broker --no-create-home \
@@ -34,4 +41,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 # The service factory reads its configuration from the environment. Binding
 # loopback is deliberate: the container runs with host networking behind the
 # host's TLS-terminating proxy, exactly as the unit it replaces did.
-ENTRYPOINT ["uvicorn", "privilege_broker.pve.service:create_broker_app_from_env", "--factory", "--host", "127.0.0.1", "--port", "8940"]
+# --no-proxy-headers keeps the real loopback peer address: the mTLS extractor
+# requires the connecting frontend to be loopback and rewrites would break it.
+ENTRYPOINT ["uvicorn", "privilege_broker.pve.service:create_broker_app_from_env", "--factory", "--host", "127.0.0.1", "--port", "8940", "--no-proxy-headers"]

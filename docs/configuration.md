@@ -342,8 +342,15 @@ expected to run with host networking behind the host's TLS-terminating proxy;
 publishing the port instead would bypass the frontend trust boundary.
 
 Give the container a writable state directory for the approval database and
-mount key material read-only. With `PYTHONDONTWRITEBYTECODE` set by the image,
-a read-only root filesystem is supported.
+mount key material read-only. Certificate signing writes a temporary public
+key and its certificate through `TMPDIR`, so a read-only root filesystem needs
+a writable `/tmp` (for example `--tmpfs /tmp`) in addition to the state
+directory. The image installs `openssh-client` because the service runs
+`ssh-keygen` itself; no shell is required.
+
+The entrypoint passes `--no-proxy-headers`. The service authenticates the
+frontend by its peer address, which must be loopback, so uvicorn must not
+rewrite the client from forwarded headers.
 
 The dispatcher and the worker stay host-side executables. They need `pct`,
 `sudo` and the SSH user CA, and the wire contract assumes the dispatcher runs
