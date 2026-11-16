@@ -35,8 +35,9 @@ jobs:
           tags: privilege-broker:smoke
       - name: The image starts the service module as a non-root user
         run: |
-          docker run --rm privilege-broker:smoke \
-            python -c "import os, privilege_broker.pve.service as s; assert os.getuid() != 0; print('imports ok, uid', os.getuid())"
+          # The image entrypoint is uvicorn, so a command must replace it.
+          docker run --rm --entrypoint python privilege-broker:smoke \
+            -c "import os, privilege_broker.pve.service as s; assert os.getuid() != 0; print('imports ok, uid', os.getuid())"
 
   publish:
     name: publish release image
