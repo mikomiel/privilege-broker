@@ -1422,3 +1422,51 @@ def test_verify_lease_returns_claims(private_key) -> None:
     verified = verify_lease(lease, private_key.public_key(), now=NOW)
     assert verified["lease_id"] == LEASE_ID
     assert verified["action_classes"] == ["ct.start"]
+
+
+def test_capture_limit_is_unknown_and_never_retried(config, private_key) -> None:
+    """An aborted capture is an uncertain outcome, not a failure.
+
+    The cap kills the child's process group after execution started, so the
+    mutation may have happened. Reporting failure would invite the very retry
+    the wire contract forbids.
+    """
+    from privilege_broker.pve._ssh_capture import SshOutputLimitExceeded
+
+    runner = Runner([SshOutputLimitExceeded("capture limit exceeded")])
+    text = _request_json(private_key)
+    exit_code, output = _run(config, private_key, text, runner)
+    assert exit_code == 1
+    assert "capture limit" in output["error"]
+    with ClaimStore(config.claim_db_path) as store:
+        stored = store.get(LEASE_ID)
+    assert stored is not None and stored["state"] == "UNKNOWN"
+
+    replay = Runner([])
+    exit_code, output = _run(config, private_key, text, replay, now=NOW + 1)
+    assert exit_code == 1
+    assert replay.calls == []
+
+
+def test_bounded_runner_reads_a_normal_child() -> None:
+    import sys
+
+    from privilege_broker.pve.dispatcher import _bounded_runner
+
+    result = _bounded_runner([sys.executable, "-c", "print('ok')"], timeout=30)
+    assert result.returncode == 0
+    assert result.stdout == "ok\n"
+
+
+def test_bounded_runner_aborts_a_child_that_exceeds_the_cap() -> None:
+    """The 4 KiB display limit is now also an allocation bound."""
+    import sys
+
+    import pytest
+
+    from privilege_broker.pve._ssh_capture import CAPTURE_LIMIT_BYTES, SshOutputLimitExceeded
+    from privilege_broker.pve.dispatcher import _bounded_runner
+
+    script = f"import sys; sys.stdout.write('x' * {CAPTURE_LIMIT_BYTES * 2})"
+    with pytest.raises(SshOutputLimitExceeded):
+        _bounded_runner([sys.executable, "-c", script], timeout=30)
