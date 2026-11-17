@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.1](https://github.com/mikomiel/privilege-broker/compare/v0.2.0...v0.2.1) (2026-11-17)
+
+
+### Bug Fixes
+
+* **dispatcher:** bound child output capture at the pipe ([fd6a613](https://github.com/mikomiel/privilege-broker/commit/fd6a6135fdeade91a0ae7e0c2dfc140809535a39))
+* **dispatcher:** bound child output capture at the pipe ([d2a8e49](https://github.com/mikomiel/privilege-broker/commit/d2a8e4964859cb553875f50ce8b674e81f41c43c))
+* **dispatcher:** keep strict decoding and handle capture faults ([de783d2](https://github.com/mikomiel/privilege-broker/commit/de783d2b1bb9ae8bc54bf387b405e87607d1ff56))
+
 ## [0.2.0](https://github.com/mikomiel/privilege-broker/compare/v0.1.0...v0.2.0) (2026-11-15)
 
 
