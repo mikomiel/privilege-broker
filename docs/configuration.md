@@ -315,3 +315,44 @@ FastAPI owns after-response delivery tasks. This is not a durable notification
 queue: a crash can lose delivery, and an HTTP response is not evidence that a
 message reached an operator. Approval, notification and execution remain
 separate states. No Discord or PVE request is made by the test suite.
+
+## Container image
+
+CI publishes `ghcr.io/mikomiel/privilege-broker` for `linux/amd64` and
+`linux/arm64`. Publication happens only from a `v*` release tag, the one
+release-please creates from a human-merged release PR; a feature merge never
+publishes. `latest` moves only for a stable `vX.Y.Z` tag. Pull requests build
+one platform, load it and smoke-import the service module as a non-root user.
+
+Pin the digest, never a tag: tags are rebuilt and a digest identifies the exact
+bytes an estate runs. The build emits an SBOM and a provenance attestation,
+records the digest in the job summary, and verifies that the digest pulls
+anonymously and that `gh attestation verify` accepts it. The image also carries
+`org.opencontainers.image.source` and `.revision` labels.
+
+Retention and digest deprecation have no owner yet: there is no garbage
+collection or deletion procedure, so a digest must be treated as permanent
+until that policy exists. Do not delete or overwrite a published tag.
+
+The image runs the approval service as a non-root user and installs the wheel
+from the repository source. It reads its configuration from the same
+environment variables as a direct install, so the service definition and the
+policy are unchanged. It binds `127.0.0.1:8940`, which is why the container is
+expected to run with host networking behind the host's TLS-terminating proxy;
+publishing the port instead would bypass the frontend trust boundary.
+
+Give the container a writable state directory for the approval database and
+mount key material read-only. Certificate signing writes a temporary public
+key and its certificate through `TMPDIR`, so a read-only root filesystem needs
+a writable `/tmp` (for example `--tmpfs /tmp`) in addition to the state
+directory. The image installs `openssh-client` because the service runs
+`ssh-keygen` itself; no shell is required.
+
+The entrypoint passes `--no-proxy-headers`. The service authenticates the
+frontend by its peer address, which must be loopback, so uvicorn must not
+rewrite the client from forwarded headers.
+
+The dispatcher and the worker stay host-side executables. They need `pct`,
+`sudo` and the SSH user CA, and the wire contract assumes the dispatcher runs
+on the Proxmox host; putting them in this container would move the trust
+boundary rather than package it.

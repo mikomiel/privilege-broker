@@ -1,0 +1,136 @@
+name: Container image
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+
+concurrency:
+  group: container-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: build and smoke
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: docker/setup-buildx-action@18ce135bb5112fa8ce4ed6c17ab05699d7f3a5e0 # v3.11.0
+      - uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          file: Containerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: privilege-broker:smoke
+      - name: The image starts the service module as a non-root user
+        run: |
+          # The image entrypoint is uvicorn, so a command must replace it.
+          docker run --rm --entrypoint python privilege-broker:smoke \
+            -c "import os, privilege_broker.pve.service as s; assert os.getuid() != 0; print('imports ok, uid', os.getuid())"
+      - name: Certificate signing works on a read-only root filesystem
+        # Exercise the real signer and the real ssh-keygen child process with
+        # only a writable /tmp, which is what the documented deployment gives it.
+        run: |
+          docker run -i --rm --read-only --tmpfs /tmp --entrypoint python privilege-broker:smoke - <<'PY'
+          import os
+          import subprocess
+          import tempfile
+
+          from privilege_broker.pve.authorization import CertificateCommandBuilder, CertificatePolicy
+          from privilege_broker.pve.service import CaCertificateSigner
+
+          work = tempfile.mkdtemp()
+          ca = os.path.join(work, "ca")
+          user = os.path.join(work, "user")
+          for path in (ca, user):
+              subprocess.run(
+                  ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", path],
+                  check=True,
+              )
+          public_key = open(user + ".pub", encoding="ascii").read().strip()
+          signer = CaCertificateSigner(ca, CertificateCommandBuilder(CertificatePolicy(source="192.0.2.0/24")))
+          certificate = signer.sign(public_key, "17")
+          assert "ssh-ed25519-cert-v01@openssh.com" in certificate
+          print("signing ok")
+          PY
+
+  publish:
+    name: publish release image
+    # Publication is a release action: only a v* tag may push or move latest.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@5927c834f5b4fdf503fca6f4c7eccda82949e1ee # v3.1.0
+      - uses: docker/setup-buildx-action@18ce135bb5112fa8ce4ed6c17ab05699d7f3a5e0 # v3.11.0
+      - uses: docker/metadata-action@c1e51972afc2121e065aed6d45c65596fe445f3f # v5.8.0
+        id: meta
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=sha,format=short,prefix=sha-
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+      - uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        id: build
+        with:
+          context: .
+          file: Containerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: true
+          sbom: true
+      - name: Attest the published image
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-name: ghcr.io/${{ github.repository }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+      - name: The published digest is anonymously pullable
+        # A public artifact must be consumable without credentials, which is
+        # also how another operator would verify it.
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}
+        run: |
+          tmp="$(mktemp -d)"
+          DOCKER_CONFIG="$tmp" docker pull "$IMAGE"
+          rm -rf "$tmp"
+      - name: Provenance attestation verifies
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}
+        run: gh attestation verify "oci://$IMAGE" --repo "${{ github.repository }}"
+      - name: Record the digest for pinning
+        # A digest identifies the exact bytes an estate runs; the tags above are
+        # conveniences and must never be pinned.
+        run: |
+          echo "image: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "digest: ${{ steps.build.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
