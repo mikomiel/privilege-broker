@@ -22,7 +22,13 @@ class SshOutputLimitExceeded(SshCaptureError):
 
 
 def run_ssh(
-    argv: list[str], *, input: str, capture_output: bool, text: bool, timeout: float
+    argv: list[str],
+    *,
+    input: str,
+    capture_output: bool,
+    text: bool,
+    timeout: float,
+    decode_errors: str = "replace",
 ) -> subprocess.CompletedProcess[str]:
     """Retain at most 64 KiB combined, without unbounded communicate().
 
@@ -108,6 +114,6 @@ def run_ssh(
     return subprocess.CompletedProcess(
         argv,
         process.returncode,
-        buffers["stdout"].decode("utf-8", errors="replace"),
-        buffers["stderr"].decode("utf-8", errors="replace"),
+        buffers["stdout"].decode("utf-8", errors=decode_errors),
+        buffers["stderr"].decode("utf-8", errors=decode_errors),
     )

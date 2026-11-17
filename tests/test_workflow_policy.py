@@ -226,9 +226,7 @@ def test_the_release_workflow_is_called_only_when_the_merge_landed() -> None:
     merge. The merge job now reports whether it landed a pull request.
     """
     document = workflow("automerge.yml")
-    assert document["jobs"]["merge"]["outputs"] == {
-        "merged": "${{ steps.merge.outputs.merged }}"
-    }
+    assert document["jobs"]["merge"]["outputs"] == {"merged": "${{ steps.merge.outputs.merged }}"}
     release = document["jobs"]["release"]
     assert release["needs"] == "merge"
     assert release["if"] == "needs.merge.outputs.merged == 'true'"

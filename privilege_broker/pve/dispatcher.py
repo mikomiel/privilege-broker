@@ -62,6 +62,7 @@ from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives.serialization import load_ssh_public_key
 
+from ._ssh_capture import SshCaptureError, SshOutputLimitExceeded, run_ssh
 from .common import (
     TYPED_ACTIONS,
     Policy,
@@ -641,6 +642,10 @@ def prune_snapshots(
         return ("FAILED", 1, report, "listing output could not be decoded; nothing was deleted")
     except OSError:
         return ("FAILED", 1, report, "listing could not be started; nothing was deleted")
+    except SshOutputLimitExceeded:
+        return ("FAILED", 1, report, "listing exceeded the capture limit; nothing was deleted")
+    except SshCaptureError:
+        return ("FAILED", 1, report, "listing capture failed; nothing was deleted")
     if listing.returncode != 0:
         return ("FAILED", int(listing.returncode) or 1, report, _truncate(listing.stderr))
 
@@ -676,6 +681,16 @@ def prune_snapshots(
             errors.append(f"{name}: output could not be decoded; the delete may still complete")
             report["kept_over_limit"] = candidates[index + 1 :]
             errors.append("remaining deletes were deferred")
+            return ("UNKNOWN", 1, report, "\n".join(errors))
+        except SshOutputLimitExceeded:
+            report["failed"].append(name)
+            errors.append(f"{name}: output exceeded the capture limit; the delete may still complete")
+            report["kept_over_limit"] = candidates[index + 1 :]
+            return ("UNKNOWN", 1, report, "\n".join(errors))
+        except SshCaptureError:
+            report["failed"].append(name)
+            errors.append(f"{name}: output capture failed; the delete may still complete")
+            report["kept_over_limit"] = candidates[index + 1 :]
             return ("UNKNOWN", 1, report, "\n".join(errors))
         except OSError:
             report["failed"].append(name)
@@ -738,6 +753,36 @@ def _on_this_node(config: DispatchConfig, ct_id: int) -> bool:
     return True
 
 
+def _bounded_runner(
+    argv: list[str],
+    *,
+    timeout: float,
+    shell: bool = False,
+    capture_output: bool = True,
+    text: bool = True,
+    **_ignored: object,
+) -> "subprocess.CompletedProcess[str]":
+    """Run one command with a bounded read of both output streams.
+
+    ``subprocess.run(capture_output=True)`` buffers the child's entire output
+    before any truncation, so a child that writes without bound can exhaust
+    memory before the 4 KiB display limit applies. The dispatcher executes
+    fixed ``sudo pct`` argv, never a shell, and aborts the child's process
+    group when the combined cap is exceeded; callers turn that into a refusal
+    or an uncertain outcome rather than a silently short result.
+    """
+    if shell:
+        raise ValueError("the dispatcher never runs a shell")
+    return run_ssh(
+        argv,
+        input="",
+        capture_output=capture_output,
+        text=text,
+        timeout=timeout,
+        decode_errors="strict",
+    )
+
+
 def dispatch(
     request: DispatchRequest,
     config: DispatchConfig,
@@ -745,7 +790,7 @@ def dispatch(
     public_key: Ed25519PublicKey,
     now: int,
     store: ClaimStore | None = None,
-    runner: Runner = subprocess.run,
+    runner: Runner = _bounded_runner,
 ) -> tuple[int, dict[str, Any]]:
     """Verify, claim and execute one request; return (exit code, JSON output).
 
@@ -893,6 +938,16 @@ def dispatch(
             # the claim stays UNKNOWN, so the lease is never executed again.
             record("UNKNOWN", None, "", "undecodable output")
             return _uncertain("command output could not be decoded; outcome unknown")
+        except SshOutputLimitExceeded:
+            # The cap aborts the process group after execution started, so the
+            # mutation may have happened: never claim failure and never retry.
+            record("UNKNOWN", None, "", "output exceeded the capture limit")
+            return _uncertain("command output exceeded the capture limit; outcome unknown")
+        except SshCaptureError:
+            # A capture fault after spawn is the same uncertainty: the command
+            # may have run, so the outcome is unknown and never re-executed.
+            record("UNKNOWN", None, "", "output capture failed")
+            return _uncertain("command output could not be captured; outcome unknown")
 
         exit_code = int(result.returncode)
         stored_state = "SUCCEEDED" if exit_code == 0 else "FAILED"
@@ -974,7 +1029,7 @@ def main(
     *,
     stdin: Any = None,
     stdout: Any = None,
-    runner: Runner = subprocess.run,
+    runner: Runner = _bounded_runner,
     clock: Callable[[], int] = time.time,
 ) -> int:
     """Read one request, dispatch it and print one JSON document.
