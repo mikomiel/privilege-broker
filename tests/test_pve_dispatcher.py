@@ -1470,3 +1470,35 @@ def test_bounded_runner_aborts_a_child_that_exceeds_the_cap() -> None:
     script = f"import sys; sys.stdout.write('x' * {CAPTURE_LIMIT_BYTES * 2})"
     with pytest.raises(SshOutputLimitExceeded):
         _bounded_runner([sys.executable, "-c", script], timeout=30)
+
+
+def test_bounded_runner_decodes_strictly() -> None:
+    """Invalid UTF-8 must stay a decode failure, not become a success."""
+    import sys
+
+    import pytest
+
+    from privilege_broker.pve.dispatcher import _bounded_runner
+
+    script = "import sys; sys.stdout.buffer.write(b'\\xff')"
+    with pytest.raises(UnicodeDecodeError):
+        _bounded_runner([sys.executable, "-c", script], timeout=30)
+
+
+def test_capture_failure_is_unknown_and_never_retried(config, private_key) -> None:
+    """A capture fault after spawn is uncertain, exactly like the limit."""
+    from privilege_broker.pve._ssh_capture import SshCaptureError
+
+    runner = Runner([SshCaptureError("capture failed")])
+    text = _request_json(private_key)
+    exit_code, output = _run(config, private_key, text, runner)
+    assert exit_code == 1
+    assert "capture" in output["error"]
+    with ClaimStore(config.claim_db_path) as store:
+        stored = store.get(LEASE_ID)
+    assert stored is not None and stored["state"] == "UNKNOWN"
+
+    replay = Runner([])
+    exit_code, output = _run(config, private_key, text, replay, now=NOW + 1)
+    assert exit_code == 1
+    assert replay.calls == []

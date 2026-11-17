@@ -62,7 +62,7 @@ from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives.serialization import load_ssh_public_key
 
-from ._ssh_capture import SshOutputLimitExceeded, run_ssh
+from ._ssh_capture import SshCaptureError, SshOutputLimitExceeded, run_ssh
 from .common import (
     TYPED_ACTIONS,
     Policy,
@@ -644,6 +644,8 @@ def prune_snapshots(
         return ("FAILED", 1, report, "listing could not be started; nothing was deleted")
     except SshOutputLimitExceeded:
         return ("FAILED", 1, report, "listing exceeded the capture limit; nothing was deleted")
+    except SshCaptureError:
+        return ("FAILED", 1, report, "listing capture failed; nothing was deleted")
     if listing.returncode != 0:
         return ("FAILED", int(listing.returncode) or 1, report, _truncate(listing.stderr))
 
@@ -683,6 +685,11 @@ def prune_snapshots(
         except SshOutputLimitExceeded:
             report["failed"].append(name)
             errors.append(f"{name}: output exceeded the capture limit; the delete may still complete")
+            report["kept_over_limit"] = candidates[index + 1 :]
+            return ("UNKNOWN", 1, report, "\n".join(errors))
+        except SshCaptureError:
+            report["failed"].append(name)
+            errors.append(f"{name}: output capture failed; the delete may still complete")
             report["kept_over_limit"] = candidates[index + 1 :]
             return ("UNKNOWN", 1, report, "\n".join(errors))
         except OSError:
@@ -772,6 +779,7 @@ def _bounded_runner(
         capture_output=capture_output,
         text=text,
         timeout=timeout,
+        decode_errors="strict",
     )
 
 
@@ -935,6 +943,11 @@ def dispatch(
             # mutation may have happened: never claim failure and never retry.
             record("UNKNOWN", None, "", "output exceeded the capture limit")
             return _uncertain("command output exceeded the capture limit; outcome unknown")
+        except SshCaptureError:
+            # A capture fault after spawn is the same uncertainty: the command
+            # may have run, so the outcome is unknown and never re-executed.
+            record("UNKNOWN", None, "", "output capture failed")
+            return _uncertain("command output could not be captured; outcome unknown")
 
         exit_code = int(result.returncode)
         stored_state = "SUCCEEDED" if exit_code == 0 else "FAILED"
