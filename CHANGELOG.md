@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/mikomiel/privilege-broker/compare/v0.2.1...v0.3.0) (2026-11-18)
+
+
+### Features
+
+* **unifi:** add passkey approvals for firewall operations ([#54](https://github.com/mikomiel/privilege-broker/issues/54)) ([d9a07a1](https://github.com/mikomiel/privilege-broker/commit/d9a07a1682213cd4fc50767f87762739f117c07b)), closes [#53](https://github.com/mikomiel/privilege-broker/issues/53)
+
 ## [0.2.1](https://github.com/mikomiel/privilege-broker/compare/v0.2.0...v0.2.1) (2026-11-17)
 
 
