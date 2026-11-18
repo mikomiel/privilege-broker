@@ -64,7 +64,7 @@ let pollTimer = setInterval(async () => {{
     const r = await fetch(`{request_api_prefix}/${{id}}/status`);
     if (!r.ok) return;
     const data = await r.json();
-    if (data.status === 'approved') {{ clearInterval(pollTimer); clearInterval(countdownTimer); setFinal('approved', 'Approved. PVE operation can proceed.'); }}
+    if (data.status === 'approved') {{ clearInterval(pollTimer); clearInterval(countdownTimer); setFinal('approved', 'Approval recorded.'); }}
     else if (data.status === 'denied') {{ clearInterval(pollTimer); clearInterval(countdownTimer); setFinal('denied', 'Denied. No action will run.'); }}
     else if (data.status === 'cancelled' || data.status === 'expired') {{ clearInterval(pollTimer); clearInterval(countdownTimer); setFinal('denied', (data.status.charAt(0).toUpperCase() + data.status.slice(1)) + '. No action will run.'); }}
   }} catch (e) {{ /* ignore network errors */ }}
@@ -109,7 +109,7 @@ const decide = async decision => {{
     }}}};
     const result = await fetch(`{request_api_prefix}/${{id}}/${{decision}}`, {{method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify({{credential: payload}})}});
     if (!result.ok) throw new Error('decision rejected');
-    setFinal('approved', 'Approved. PVE operation can proceed.');
+    setFinal('approved', 'Approval recorded.');
   }} catch (error) {{ setFinal('error', 'Passkey challenge was not completed.'); }}
 }};
 document.getElementById('approve').onclick = () => decide('approval');

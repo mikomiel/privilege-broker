@@ -104,7 +104,10 @@ def test_approved_lifecycle(tmp_path, operation):
         url = f"{API_PREFIX}/{request_id}"
         assert client.get(url, headers=OTHER).status_code == 404
         assert client.get(f"{url}/approval").status_code == 403
-        assert client.get(f"{url}/approval", headers=OPERATOR).status_code == 200
+        page = client.get(f"{url}/approval", headers=OPERATOR)
+        assert page.status_code == 200
+        assert "Approval recorded." in page.text
+        assert "PVE operation" not in page.text
         assert client.post(f"{url}/claim", headers=WORKER).status_code == 409
         credential = approve(client, url)
         wrong_origin = {**OPERATOR, "origin": "https://other.example.test"}
