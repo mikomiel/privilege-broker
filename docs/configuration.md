@@ -1,6 +1,6 @@
 # PVE configuration
 
-This pre-release stage supplies authorization, approval, certificate signing,
+The PVE release supplies authorization, approval, certificate signing,
 the agent-side bridge and worker, and the target-side dispatcher with its
 durable claim store and policy-bounded snapshot pruning. The generic
 execution-outcome API is not included yet. Deployment, credentials, TLS and

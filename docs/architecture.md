@@ -100,7 +100,7 @@ is explicit constructor input.
 
 ### Known limits
 
-- Pre-release: the generic execution-outcome API (task 5.1's follow-on) is not
+- Follow-up: the generic execution-outcome API (task 5.1's follow-on) is not
   designed yet, and no consumer has been cut over.
 - At-most-once dispatch is bound to one host and one claim database; a
   migration-capable target needs broker-side executor binding first.
@@ -108,9 +108,9 @@ is explicit constructor input.
   `sudo`, TLS, trust roots and the state directory are deployer-owned.
 - WebAuthn coverage uses software authenticators; no browser or hardware-passkey
   acceptance is claimed.
-- No package publication, container image or deployment is produced by the
-  source repository alone. A version tag and its GitHub Release are, and they
-  assert nothing about deployment.
+- [The release process](releases.md) describes the GitHub Release and the
+  container image built from its version tag. Production deployment requires
+  separate acceptance.
 
 ## Compatibility and extraction adaptations
 
