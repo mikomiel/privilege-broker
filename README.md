@@ -29,6 +29,10 @@ The extracted source can:
 - Poll approvals with safe error summaries and bounded SSH capture, without treating approval as execution.
 - Dispatch on the target node through a fixed-argv typed dispatcher that claims each lease once in a durable SQLite store.
 
+The optional UniFi provider binds a passkey approval to a typed firewall
+policy proposal and supplies a signed, single-use grant to its executor.
+See [UniFi configuration](docs/configuration.md#unifi-firewall-approvals).
+
 ## Try the local example
 
 With Python 3.11+ and uv, from a clone of this repository:

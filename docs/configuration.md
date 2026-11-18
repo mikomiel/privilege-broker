@@ -91,6 +91,43 @@ passkey; denial grants no authority. Protect these URLs against unwanted
 cancellation and metadata disclosure. There is no authenticated generic
 execution-outcome API yet.
 
+## UniFi firewall approvals
+
+The optional UniFi provider uses the broker's enrolled passkeys and durable
+database. Set `UNIFI_BROKER_POLICY_FILE` to a JSON file with the following
+fields.
+
+- `requesters` maps requester certificate subjects to an address or an array
+  of observed addresses.
+- `executor` and `executor_sources` identify the one executor and its
+  allowed observed addresses.
+- `targets` lists allowed objects with `site_id`, `source_zone`, and
+  `destination_zone` UUIDs. Configure only intended data zone pairs.
+
+Keep requester and executor certificate subjects distinct from each other and
+from the PVE clients. The trusted TLS frontend supplies the verified client
+identity and observed address using the broker's existing mTLS headers.
+Bind the broker behind that frontend on loopback.
+
+Set `UNIFI_BROKER_OPERATOR_PROXY_TOKEN` to a dedicated random secret with at
+least 32 characters. The frontend authenticates the operator before routing a
+UniFi approval page, status poll, or passkey request. It strips incoming
+`x-unifi-broker-operator` values and supplies its own header from the shared
+secret on those authenticated routes. Serve the pages on the configured
+WebAuthn origin. Apply an inbound body size limit; the provider accepts an
+encoded proposal up to 32 KiB.
+
+Requester routes start at `/v1/unifi/requests`. An executor can list approved
+IDs at `/v1/unifi/work`, then claim a request once through
+`/v1/unifi/requests/{id}/claim`. The response contains the proposal, its
+signed Ed25519 grant, and a base64url signature. The grant expires after
+90 seconds or at the request deadline, whichever comes first. The claimed
+executor reports an outcome at `/v1/unifi/requests/{id}/result`; repeating
+the same outcome is idempotent. A claimed request with an expired grant
+and no result reports uncertainty to its original requester. The executor
+can retrieve such a proposal through the read-back-only recovery route. The
+recovery route returns the proposal without an execution grant.
+
 ## Agent bridge and worker
 
 The bridge and worker are libraries with explicit configuration only. They read

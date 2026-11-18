@@ -1,8 +1,8 @@
 # Contributing
 
 Read [AGENTS.md](AGENTS.md) and [SECURITY.md](SECURITY.md) first. The project
-accepts focused changes to the approved PVE extraction and its documented
-interfaces, not arbitrary-shell execution or speculative provider frameworks.
+accepts focused changes to the documented PVE and UniFi providers and
+their approval interfaces.
 
 ## Changes and checks
 
