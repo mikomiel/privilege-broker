@@ -112,6 +112,15 @@ is explicit constructor input.
   container image built from its version tag. Production deployment requires
   separate acceptance.
 
+### UniFi firewall provider
+
+The optional provider uses the shared credential store and audit journal.
+A browser challenge binds the frozen proposal. The configured UniFi
+executor atomically claims an approved request and receives a signed
+grant for that proposal. A result is accepted from that executor and
+shown to the original requester. See the deployment requirements in
+[configuration](configuration.md#unifi-firewall-approvals).
+
 ## Compatibility and extraction adaptations
 
 The wire versions remain `pve-operate-v1`, `pve-approval-v1` and
@@ -170,9 +179,9 @@ owns the outcome interfaces and
 end-to-end acceptance. Consumer pinning, deployment and live
 PVE acceptance are separate gates. No current consumer has switched.
 
-PVE is the only initial provider. There is no dynamic plugin system, arbitrary
-shell mode or approval-only advisory mode. The eventual lifecycle must keep
-notification, authorization, dispatch and execution outcome distinct.
+PVE is the default provider. The UniFi firewall provider is enabled by
+configuration and uses a separate executor. Each provider keeps notification,
+authorization, dispatch and execution outcome distinct.
 
 ## Provenance
 

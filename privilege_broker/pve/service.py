@@ -47,6 +47,7 @@ from webauthn.helpers.structs import (
 )
 
 from ..notifications import DiscordNotifier, approval_message, describe_error
+from ..unifi import UniFiPolicy, install_unifi_routes, load_unifi_policy
 from .authorization import (
     EXCLUDED_ACTIONS,
     CanonicalRequest,
@@ -1130,6 +1131,8 @@ def create_broker_app(
     policy: Policy,
     notifier: DiscordNotifier | None = None,
     lifespan: Any = None,
+    unifi_policy: UniFiPolicy | None = None,
+    unifi_operator_token: str = "",
 ) -> FastAPI:
     """Create the broker FastAPI application.
 
@@ -1472,6 +1475,9 @@ def create_broker_app(
             request_id=_html_json_attribute(request_id),
             details=_html_json_attribute(shown),
             expires_at=_html_json_attribute(req["expires_at"]),
+            title="PVE Approval",
+            heading="PVE operation approval",
+            request_api_prefix="/v1/broker/requests",
         )
 
     # -- Browser status poll -----------------------------------------------
@@ -1485,6 +1491,15 @@ def create_broker_app(
             raise HTTPException(status_code=404, detail="not found") from exc
         return {"status": req["status"]}
 
+    if unifi_policy is not None:
+        def notify_unifi(request_id: str, message: str) -> None:
+            if notifier is not None:
+                _notify(notifier, store, request_id, message)
+
+        install_unifi_routes(
+            app, store, signer, verifier, unifi_policy, unifi_operator_token,
+            rp_id, origin, _APPROVAL_HTML_TEMPLATE, notify_unifi,
+        )
     return app
 
 
@@ -1514,6 +1529,14 @@ def create_broker_app_from_env() -> FastAPI:
             CertificatePolicy(source=cert_source)
         except ValueError as exc:
             raise RuntimeError("PVE_BROKER_CERT_SOURCE must be a restricted CIDR") from exc
+    unifi_policy_path = os.environ.get("UNIFI_BROKER_POLICY_FILE", "")
+    unifi_policy = None
+    if unifi_policy_path:
+        try:
+            unifi_policy = load_unifi_policy(Path(unifi_policy_path))
+        except (ValueError, OSError):
+            raise RuntimeError("UNIFI_BROKER_POLICY_FILE is invalid") from None
+    unifi_operator_token = os.environ.get("UNIFI_BROKER_OPERATOR_PROXY_TOKEN", "")
     mtls_clients_json = os.environ.get("PVE_BROKER_MTLS_CLIENTS_JSON", "")
     extractor: MtlsIdentityExtractor = RejectingExtractor()
     if mtls_clients_json:
@@ -1536,6 +1559,10 @@ def create_broker_app_from_env() -> FastAPI:
             isinstance(identity, str) and _valid(sources) for identity, sources in expected_clients.items()
         ):
             raise RuntimeError("PVE_BROKER_MTLS_CLIENTS_JSON must map identities to an IP or a non-empty list of IPs")
+        if unifi_policy is not None and set(expected_clients).intersection(
+            {*unifi_policy.requesters, unifi_policy.executor}
+        ):
+            raise RuntimeError("PVE and UniFi mTLS identities must be disjoint")
         extractor = TrustedProxyMtlsExtractor(expected_clients)
 
     ca_key_path = os.environ.get("PVE_BROKER_CA_KEY_PATH", "")
@@ -1576,6 +1603,8 @@ def create_broker_app_from_env() -> FastAPI:
             policy=policy,
             notifier=notifier,
             lifespan=lifespan,
+            unifi_policy=unifi_policy,
+            unifi_operator_token=unifi_operator_token,
         )
     except Exception:
         store.close()
