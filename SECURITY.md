@@ -2,9 +2,8 @@
 
 ## Status and reporting
 
-This repository contains an early-release PVE authorization and approval service,
-not the complete agent-to-execution product. No product release or production deployment is
-yet supported. Do not use it as an authorization boundary until the PVE
+This repository publishes early releases of the PVE authorization and approval
+service. Use it as a production authorization boundary only after the PVE
 extraction and its acceptance checks are complete.
 
 Private vulnerability reporting is enabled. Use the Security tab
