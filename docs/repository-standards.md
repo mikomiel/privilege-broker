@@ -77,8 +77,6 @@ messages before public push and in CI.
 Optional community features, a second administrator, coverage quotas and
 artifact publication are not installed merely to improve a score. There is
 no browser or hardware-passkey acceptance claim: the approval UI is packaged,
-but its local tests use software authenticator crypto and HTML checks. There
-is no product-release or artifact-attestation claim; no product artifact has
-been published.
-See [releases.md](releases.md) for release-please, which tags and publishes the
-GitHub Release when a release pull request merges, and for that boundary.
+but its local tests use software authenticator crypto and HTML checks.
+[The release process](releases.md) describes how a maintainer authorizes the
+GitHub Release and the verified container image published from its tag.

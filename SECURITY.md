@@ -2,7 +2,7 @@
 
 ## Status and reporting
 
-This repository contains a pre-release PVE authorization and approval service,
+This repository contains an early-release PVE authorization and approval service,
 not the complete agent-to-execution product. No product release or production deployment is
 yet supported. Do not use it as an authorization boundary until the PVE
 extraction and its acceptance checks are complete.

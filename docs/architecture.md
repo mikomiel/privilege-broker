@@ -100,7 +100,7 @@ is explicit constructor input.
 
 ### Known limits
 
-- Pre-release: the generic execution-outcome API (task 5.1's follow-on) is not
+- Follow-up: the generic execution-outcome API (task 5.1's follow-on) is not
   designed yet, and no consumer has been cut over.
 - At-most-once dispatch is bound to one host and one claim database; a
   migration-capable target needs broker-side executor binding first.

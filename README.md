@@ -8,14 +8,14 @@ Human-approved typed operations for AI agents, with Proxmox VE as the first inte
 For operators who want agents to request bounded actions without receiving a
 general shell or infrastructure-wide credentials.
 
-**Status: pre-release PVE extraction.** The package includes a SQLite-backed
+**Status: early PVE release.** The package includes a SQLite-backed
 WebAuthn service, passkey UI, server-owned Discord notifications, restricted
 SSH certificate signing, the agent-side bridge, client and worker, and the
 target-side typed dispatcher with a durable SQLite claim store and
 policy-bounded snapshot pruning. The generic execution-outcome API is not
 included yet.
-No existing deployment has switched to it. A tagged source version is a
-release, not a supported deployment.
+[GitHub Releases](https://github.com/mikomiel/privilege-broker/releases) carries
+the tagged source. Live deployment acceptance requires separate evidence.
 
 The extracted source can:
 

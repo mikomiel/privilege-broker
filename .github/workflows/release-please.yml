@@ -1,7 +1,7 @@
 # Release automation under the repository's own merge policy: release-please
 # opens one release pull request on a release-relevant conventional commit, and
 # owns the version tag and the GitHub Release once that pull request merges.
-# No package, container, image or deployment publisher is installed.
+# The version tag starts container.yml, which publishes the release image.
 #
 # The release pull request always changes a sensitive path (pyproject.toml, this
 # configuration or the manifest), so scripts/pr_policy.py never auto-merges it.
