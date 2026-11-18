@@ -108,9 +108,9 @@ is explicit constructor input.
   `sudo`, TLS, trust roots and the state directory are deployer-owned.
 - WebAuthn coverage uses software authenticators; no browser or hardware-passkey
   acceptance is claimed.
-- [The release process](releases.md) defines how the version tag publishes the
-  GitHub Release and starts the container workflow. Production deployment
-  requires separate acceptance.
+- [The release process](releases.md) describes the GitHub Release and the
+  container image built from its version tag. Production deployment requires
+  separate acceptance.
 
 ## Compatibility and extraction adaptations
 
